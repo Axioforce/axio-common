@@ -8,10 +8,9 @@ from typing import Optional, List
 from sqlalchemy import Column, ForeignKey, JSON, text, String, Float, TEXT, DateTime, Integer, Text, BigInteger
 from sqlalchemy.orm import Session
 
-from database import Base
-from logger_config import logger
-from utils.model_utils import current_time
-from models.run import Run, CompleteRunRequest
+from axio_common.database import Base
+from axio_common.logger import logger
+from axio_common.utils.model_utils import current_time
 
 
 class UpdateJobProgressRequest(BaseModel):
@@ -94,7 +93,7 @@ class Job(Base):
         elif status == "interrupted":
             self.interrupted_at = current_time()
             if self.hostname:
-                from utils.shared import client_by_hostname
+                from axio_common.utils.shared import client_by_hostname
                 client = client_by_hostname(hostname, db, update_activity=False)
                 client.remove_active_job(db)
 
@@ -107,6 +106,7 @@ class Job(Base):
         """
         Start a new run, updating the progress and initializing run_progress.
         """
+        from axio_common.models import Run
         logger.info(f"Job {self.id} starting run {run_number}")
         self.run_number = run_number
         if run_number == 1:
@@ -128,6 +128,7 @@ class Job(Base):
         """
         Update the progress of the job and log the change.
         """
+        from axio_common.models import Run
         logger.info(f"Job {self.id} progress updated: Run {self.run_number} -> {update.run_number}")
         self.run_number = update.run_number
         self.total_runs = update.total_runs
@@ -144,10 +145,11 @@ class Job(Base):
         db.commit()
         db.refresh(run)
 
-    def complete_run(self, update: CompleteRunRequest, db):
+    def complete_run(self, update, db):
         """
         Complete the current run and log the results.
         """
+        from axio_common.models import Run
         logger.info(f"Job {self.id} run {update.run_number} completed")
         run = db.query(Run).filter(Run.job_id == self.id, Run.is_current).first()
         if not run:

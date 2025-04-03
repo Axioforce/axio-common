@@ -7,9 +7,9 @@ from pydantic import BaseModel
 from sqlalchemy import Column, String, ForeignKey, Integer, Float, DateTime, Boolean, JSON
 from sqlalchemy.orm import Session
 
-from database import Base
-from logger_config import logger
-from utils.model_utils import current_time
+from axio_common.database import Base
+from axio_common.logger import logger
+from axio_common.utils.model_utils import current_time
 
 
 class CompleteRunRequest(BaseModel):

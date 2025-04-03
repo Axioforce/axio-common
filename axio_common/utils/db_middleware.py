@@ -1,12 +1,9 @@
 from sqlalchemy import event
 from sqlalchemy.orm import Session
 
-from db_core import database, database_server
-from models.run import Run
-from models.jobs import Job
-from models.client import Client
-from models.device import Device
-from logger_config import logger
+from axio_common.database import database, database_server
+from axio_common.logger import logger
+from axio_common.models import Run, Job, Client, Device
 
 # Firestore collection
 devices_doc = database.document("devices")
@@ -247,17 +244,17 @@ def sync_devices_from_firebase_to_sql(db: Session):
     db.commit()
 
 
-if __name__ == "__main__":
-    from database import Base, engine, SessionLocal
-    from logger_config import logger
-
-    logger.info("Initializing database...")
-    Base.metadata.create_all(bind=engine)
-    logger.info("Database initialized with the following tables:")
-    for table in Base.metadata.tables:
-        logger.info(f"  {table}")
-    # Create a session and sync Firebase to SQL **only once at startup**
-    db = SessionLocal()
-    logger.info("Syncing Firebase data to SQL on startup...")
-    sync_all_collections_from_firebase_to_sql(db)
-    db.close()
+# if __name__ == "__main__":
+#     from database import Base, engine, SessionLocal
+#     # from logger_config import logger
+#
+#     logger.info("Initializing database...")
+#     Base.metadata.create_all(bind=engine)
+#     logger.info("Database initialized with the following tables:")
+#     for table in Base.metadata.tables:
+#         logger.info(f"  {table}")
+#     # Create a session and sync Firebase to SQL **only once at startup**
+#     db = SessionLocal()
+#     logger.info("Syncing Firebase data to SQL on startup...")
+#     sync_all_collections_from_firebase_to_sql(db)
+#     db.close()

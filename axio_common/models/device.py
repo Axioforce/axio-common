@@ -3,9 +3,9 @@ from typing import Optional
 from pydantic import BaseModel
 from sqlalchemy import Column, String, TEXT, DateTime, Integer, JSON, BigInteger
 
-from database import Base
-from utils.model_utils import current_time
-from logger_config import logger
+from axio_common.database import Base
+from axio_common.logger import logger
+from axio_common.utils.model_utils import current_time
 
 TYPE_ID_NAME_MAP = {
     "01": "(Deprecated) Small Force Plate",

@@ -3,7 +3,7 @@ from firebase_admin import credentials, firestore
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 from dotenv import load_dotenv
-from logger_config import logger
+from axio_common.logger import logger
 import os
 
 load_dotenv()
@@ -36,3 +36,11 @@ SessionLocal = sessionmaker(bind=engine)
 
 # Create all tables
 Base.metadata.create_all(bind=engine)
+
+# Dependency to get database session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

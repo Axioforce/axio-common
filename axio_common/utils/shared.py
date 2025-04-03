@@ -2,10 +2,8 @@ from typing import Optional
 from fastapi import Request
 from sqlalchemy.orm import Session
 
-from models.device import Device
-from models.jobs import Job
-from models.client import Client
-from logger_config import logger, hostname_filter
+from axio_common.models import Device, Job, Client
+from axio_common.logger import logger, hostname_filter
 
 
 MAX_TIME_DIFF = 600  # Maximum time difference in seconds between current time and last heartbeat

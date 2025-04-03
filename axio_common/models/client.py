@@ -1,14 +1,14 @@
 import uuid
 
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import Column, String, Boolean, DateTime, Float, Integer
 from sqlalchemy.orm import Session
 from typing import Optional, Union, List
 
-from database import Base
-from logger_config import logger
-from utils.model_utils import current_time
+from axio_common.database import Base
+from axio_common.logger import logger
+from axio_common.utils.model_utils import current_time
 
 
 class ClientResponse(BaseModel):
@@ -113,7 +113,7 @@ class Client(Base):
         """
         Shutdown a specific job on the client and log the action.
         """
-        from utils.shared import update_job_status
+        from axio_common.utils import update_job_status
         logger.info(f"Job {job_id} on {self.hostname} is shutting down.")
         update_job_status(job_id, "shutting_down", db)
 
