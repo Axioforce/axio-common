@@ -29,7 +29,7 @@ logger.info(f"Using database URL: {DATABASE_URL}")
 # database_server = database.document(SERVER_NAME)
 
 Base = declarative_base()
-engine = create_engine(DATABASE_URL)
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine)
 
 # Create all tables
