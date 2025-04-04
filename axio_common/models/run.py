@@ -81,7 +81,7 @@ class Run(Base):
         """
         Mark the run as complete.
         """
-        from models.device import Device
+        from axio_common.models import Device
         self.completed_at = current_time()
         self.updated_at = current_time()
         self.duration = (self.completed_at - self.created_at).total_seconds()

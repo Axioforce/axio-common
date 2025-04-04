@@ -113,7 +113,7 @@ class Client(Base):
         """
         Shutdown a specific job on the client and log the action.
         """
-        from axio_common.utils import update_job_status
+        from axio_common.utils.shared import update_job_status
         logger.info(f"Job {job_id} on {self.hostname} is shutting down.")
         update_job_status(job_id, "shutting_down", db)
 
