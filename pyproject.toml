@@ -1,29 +1,12 @@
 [project]
 name = "axio_common"
-version = "0.1.0"
+version = "0.2.0"
 description = "Shared models and utilities for Axio backend services."
 authors = [{ name = "Stephen Houston", email = "stephen.houston@axioforce.com" }]
 dependencies = [
-    "sqlalchemy>=2.0",
-    "pydantic>=2.0",
-    "fastapi>=0.100",
-    "firebase-admin>=6.0",
-    "google-cloud-firestore>=2.0",
-    "google-cloud-storage>=3.0",
-    "google-api-python-client>=2.0",
-    "google-auth>=2.0",
-    "google-auth-httplib2>=0.1",
-    "google-resumable-media>=2.0",
-    "google-crc32c>=1.0",
-    "googleapis-common-protos>=1.0",
-    "cryptography>=44.0",
-    "psycopg2-binary>=2.0",
-    "pandas>=2.0",
-    "numpy>=2.0",
-    "pyarrow>=19.0",
-    "pydantic-core>=2.0",
-    "python-dotenv>=1.0",
-    "python-dateutil>=2.0",
+    "dotenv",
+    "pydantic>=2.0.0",
+    "SQLAlchemy>=2.0.0",
 ]
 
 [build-system]

@@ -1,5 +1,4 @@
 from typing import Optional
-from fastapi import Request
 from sqlalchemy.orm import Session
 
 from axio_common.models import Device, Job, Client
@@ -63,7 +62,7 @@ def device_by_id(device_id: str, db: Session):
 
 
 # Function to resolve the hostname for a given client IP address
-def resolve_hostname(client_request: Request, db: Session, hostname: Optional[str] = None):
+def resolve_hostname(client_request, db: Session, hostname: Optional[str] = None):
     """
         Resolve the hostname for a client. Register the client if not already registered.
     """
