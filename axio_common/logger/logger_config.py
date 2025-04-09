@@ -26,6 +26,19 @@ class HostnameFilter(logging.Filter):
         record.ipaddress = getattr(self.local, "ipaddress", "ipaddress_unknown")
         return True
 
+def set_log_level(level):
+    """
+    Set the logging level for the logger.
+    """
+    level = level.upper()
+    if level not in logging._nameToLevel:
+        available_levels = "\n\t".join(logging._nameToLevel.keys())
+        raise ValueError(f"Invalid log level: {level}\nAvailable levels:\n{available_levels}")
+    new_level = logging._nameToLevel[level]
+    logging.getLogger().setLevel(new_level)
+    logging.getLogger("job_manager_logger").setLevel(new_level)
+
+    return f"Log level set to {level}"
 
 print("logger_config.py executed")
 
