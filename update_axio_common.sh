@@ -1,20 +1,42 @@
-#!/bin/bash
 
-set -e  # Exit immediately on any error
-source ~/anaconda3/etc/profile.d/conda.sh  # Load conda functions
+set -e
+source ~/anaconda3/etc/profile.d/conda.sh  # Or path to your conda install
 
 cd ~/Documents/axio-common
 
-echo "Activating axio-server..."
+# Ask for minor or major version bump
+echo "Do you want to bump the version? (y/n)"
+read -r answer
+if [[ $answer == "y" ]]; then
+  read -r -p "What type of version bump? ((M)ajor/(m)inor/(p)atch) [p]: " bump_type
+  bump_type=${bump_type:-p}
+  if [[ $bump_type == "M" ]]; then
+    bump-my-version bump major
+  elif [[ $bump_type == "m" ]]; then
+    bump-my-version bump minor
+  elif [[ $bump_type == "p" ]]; then
+    bump-my-version bump patch
+  else
+    echo "Invalid version bump type. Exiting."
+    exit 1
+  fi
+else
+    echo "Version bump skipped."
+    exit 0
+fi
+
+# Show new version
+NEW_VERSION=$(grep '^version =' pyproject.toml | cut -d '"' -f2)
+echo "📦 Bumped axio-common to version $NEW_VERSION"
+
+echo "📁 Installing in axio-server..."
 conda activate axio-server
-echo "Updating axio-common in axio-server environment..."
 pip install -e .
 conda deactivate
 
-echo "Activating axio-dash..."
+echo "📁 Installing in axio-dash..."
 conda activate axio-dash
-echo "Updating axio-common in axio-dash environment..."
 pip install -e .
 conda deactivate
 
-echo "✅ axio-common updated in both environments."
+echo "✅ axio-common $NEW_VERSION installed in both environments."
