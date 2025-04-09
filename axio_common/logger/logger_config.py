@@ -1,17 +1,22 @@
 import logging
 import threading
+import socket
 
 
-# Custom logging filter to include hostname
+# Custom logging filter to include hostname and IP address
 class HostnameFilter(logging.Filter):
     def __init__(self):
         super().__init__()
         self.local = threading.local()
-        self.local.hostname = "hostname_unknown"  # Default hostname
-        self.local.ipaddress = "ipaddress_unknown"  # Default ipaddress
+        # Default to actual hostname and IP
+        self.local.hostname = socket.gethostname()
+        try:
+            self.local.ipaddress = socket.gethostbyname(socket.gethostname())
+        except socket.gaierror:
+            self.local.ipaddress = "ipaddress_unknown"
 
     def set_hostname(self, hostname=None):
-        self.local.hostname = hostname if hostname else "hostname_unknown"
+        self.local.hostname = hostname if hostname else socket.gethostname()
 
     def set_ipaddress(self, ipaddress=None):
         self.local.ipaddress = ipaddress if ipaddress else "ipaddress_unknown"
@@ -34,6 +39,12 @@ logging.basicConfig(
     ]
 )
 
-logger = logging.getLogger("job_manager_logger")
+# Create and register filter
 hostname_filter = HostnameFilter()
+
+# Apply filter to your custom logger
+logger = logging.getLogger("job_manager_logger")
 logger.addFilter(hostname_filter)
+
+# Apply filter to root logger to avoid KeyError
+logging.getLogger().addFilter(hostname_filter)
