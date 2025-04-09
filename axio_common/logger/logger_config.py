@@ -1,4 +1,5 @@
 import logging
+import sys
 import threading
 import socket
 
@@ -26,6 +27,14 @@ class HostnameFilter(logging.Filter):
         record.ipaddress = getattr(self.local, "ipaddress", "ipaddress_unknown")
         return True
 
+class SafeFormatter(logging.Formatter):
+    def format(self, record):
+        if not hasattr(record, "hostname"):
+            record.hostname = "unknown_host"
+        if not hasattr(record, "ipaddress"):
+            record.ipaddress = "unknown_ip"
+        return super().format(record)
+
 def set_log_level(level):
     """
     Set the logging level for the logger.
@@ -44,20 +53,18 @@ print("logger_config.py executed")
 
 # Configure logging
 # noinspection SpellCheckingInspection
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(levelname)s] [%(hostname)s/%(ipaddress)s] [%(module)s:%(funcName)s:%(lineno)d] %(message)s",
-    handlers=[
-        logging.StreamHandler()
-    ]
-)
+# --- Logging setup ---
+formatter = SafeFormatter("[%(levelname)s] [%(hostname)s/%(ipaddress)s] [%(module)s:%(funcName)s:%(lineno)d] %(message)s")
 
-# Create and register filter
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(formatter)
+
+logging.basicConfig(level=logging.INFO, handlers=[handler])
+
 hostname_filter = HostnameFilter()
+logging.getLogger().addFilter(hostname_filter)  # Apply filter to base logger
+logging.getLogger("job_manager_logger").addFilter(hostname_filter)  # Also the custom logger
 
-# Apply filter to your custom logger
-logger = logging.getLogger("job_manager_logger")
-logger.addFilter(hostname_filter)
-
-# Apply filter to root logger to avoid KeyError
-logging.getLogger().addFilter(hostname_filter)
+# Apply to uvicorn loggers too
+logging.getLogger("uvicorn.access").addFilter(hostname_filter)
+logging.getLogger("uvicorn.error").addFilter(hostname_filter)
