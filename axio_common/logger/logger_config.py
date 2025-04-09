@@ -68,3 +68,5 @@ logging.getLogger("job_manager_logger").addFilter(hostname_filter)  # Also the c
 # Apply to uvicorn loggers too
 logging.getLogger("uvicorn.access").addFilter(hostname_filter)
 logging.getLogger("uvicorn.error").addFilter(hostname_filter)
+
+logger = logging.getLogger("job_manager_logger")
