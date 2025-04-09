@@ -5,24 +5,19 @@ source ~/anaconda3/etc/profile.d/conda.sh  # Or path to your conda install
 cd ~/Documents/axio-common
 
 # Ask for minor or major version bump
-echo "Do you want to bump the version? (y/n)"
-read -r answer
-if [[ $answer == "y" ]]; then
-  read -r -p "What type of version bump? ((M)ajor/(m)inor/(p)atch) [p]: " bump_type
-  bump_type=${bump_type:-p}
-  if [[ $bump_type == "M" ]]; then
-    bump-my-version bump major
-  elif [[ $bump_type == "m" ]]; then
-    bump-my-version bump minor
-  elif [[ $bump_type == "p" ]]; then
-    bump-my-version bump patch
-  else
-    echo "Invalid version bump type. Exiting."
-    exit 1
-  fi
+read -r -p "What type of version bump? ([M]ajor/[m]inor/[p]atch/[s]kip) [p]: " bump_type
+bump_type=${bump_type:-p}
+if [[ $bump_type == "M" ]]; then
+  bump-my-version bump major
+elif [[ $bump_type == "m" ]]; then
+  bump-my-version bump minor
+elif [[ $bump_type == "p" ]]; then
+  bump-my-version bump patch
+elif [[ $bump_type == "s" ]]; then
+  echo "Skipping version bump."
 else
-    echo "Version bump skipped."
-    exit 0
+  echo "Invalid version bump type. Exiting."
+  exit 1
 fi
 
 # Show new version
