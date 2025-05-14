@@ -180,6 +180,17 @@ class Job(Base):
         logger.info(f"Heartbeat updated for job {self.id}")
         db.commit()
 
+    def get_best_run(self, db):
+        """
+        Get the best run for the job based on the best test metrics.
+        """
+        from axio_common.models import Run
+        best_run = db.query(Run).filter(Run.job_id == self.id, Run.is_best).first()
+        if not best_run:
+            logger.warning(f"No best run found for job {self.id}")
+            return None
+        return best_run
+
     def to_simple(self):
         """
         Return a simple version of the job for API responses.

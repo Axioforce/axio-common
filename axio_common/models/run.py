@@ -163,3 +163,32 @@ class Run(Base):
         for key, value in data.items():
             if key in self.to_dict() and value is not None:  # Only update if not None
                 setattr(self, key, value)
+
+    def to_simple(self):
+        """
+        Convert the Run object to a simplified dictionary format.
+        """
+        return {
+            "id": self.id,
+            "job_id": self.job_id,
+            "number": self.number,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "duration": self.duration,
+            "completed_at": self.completed_at,
+            "train_metrics": self.train_metrics,
+            "val_metrics": self.val_metrics,
+            "test_metrics": self.test_metrics
+        }
+
+class SimpleRun(BaseModel):
+    id: str
+    job_id: str
+    number: int
+    created_at: datetime
+    updated_at: datetime
+    duration: float
+    completed_at: Optional[datetime]
+    train_metrics: Optional[dict]
+    val_metrics: Optional[dict]
+    test_metrics: Optional[dict]
