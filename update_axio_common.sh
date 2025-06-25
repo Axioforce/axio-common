@@ -4,6 +4,8 @@ source ~/anaconda3/etc/profile.d/conda.sh  # Or path to your conda install
 
 cd ~/Documents/axio-common
 
+conda activate axio-common
+
 # Ask for minor or major version bump
 read -r -p "What type of version bump? ([M]ajor/[m]inor/[p]atch/[s]kip) [p]: " bump_type
 bump_type=${bump_type:-p}
@@ -19,6 +21,8 @@ else
   echo "Invalid version bump type. Exiting."
   exit 1
 fi
+
+conda deactivate
 
 # Show new version
 NEW_VERSION=$(grep '^version =' pyproject.toml | cut -d '"' -f2)
