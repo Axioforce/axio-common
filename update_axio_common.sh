@@ -30,7 +30,13 @@ echo "📦 Bumped axio-common to version $NEW_VERSION"
 
 echo "📁 Installing in axio-server..."
 conda activate axio-server
-pip install -e .
+echo "Uninstalling existing axio-common..."
+pip uninstall -y axio-common || true
+echo "Reinstalling latest axio-common from GitHub..."
+pip install --no-cache-dir -e git+https://github.com/Axioforce/axio-common.git#egg=axio_common
+echo "Checking axio-common path after update:"
+python3 -c "import axio_common, os; print(os.path.dirname(axio_common.__file__))"
+echo "Freezing requirements to requirements.txt..."
 pip freeze > requirements.txt
 git add requirements.txt
 git commit -m "Update requirements.txt for axio-common $NEW_VERSION"
@@ -39,7 +45,13 @@ conda deactivate
 
 echo "📁 Installing in axio-dash..."
 conda activate axio-dash
-pip install -e .
+echo "Uninstalling existing axio-common..."
+pip uninstall -y axio-common || true
+echo "Reinstalling latest axio-common from GitHub..."
+pip install --no-cache-dir -e git+https://github.com/Axioforce/axio-common.git#egg=axio_common
+echo "Checking axio-common path after update:"
+python3 -c "import axio_common, os; print(os.path.dirname(axio_common.__file__))"
+echo "Freezing requirements to requirements.txt..."
 pip freeze > requirements.txt
 git add requirements.txt
 git commit -m "Update requirements.txt for axio-common $NEW_VERSION"
