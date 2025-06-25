@@ -158,7 +158,7 @@ class Job(Base):
 
         run.complete(self, update, db)
 
-        self.duration = (run.completed_at - self.started_at).total_seconds()
+        self.duration = (run.completed_at - self.assigned_at).total_seconds()
 
         db.commit()
         return run
@@ -177,6 +177,7 @@ class Job(Base):
         Update the timestamp of the last heartbeat.
         """
         self.last_heartbeat = current_time()
+        self.duration = (self.last_heartbeat - self.assigned_at).total_seconds() if self.assigned_at else 0
         logger.info(f"Heartbeat updated for job {self.id}")
         db.commit()
 
