@@ -31,11 +31,19 @@ echo "📦 Bumped axio-common to version $NEW_VERSION"
 echo "📁 Installing in axio-server..."
 conda activate axio-server
 pip install -e .
+pip freeze > requirements.txt
+git add requirements.txt
+git commit -m "Update requirements.txt for axio-common $NEW_VERSION"
+git push origin main
 conda deactivate
 
 echo "📁 Installing in axio-dash..."
 conda activate axio-dash
 pip install -e .
+pip freeze > requirements.txt
+git add requirements.txt
+git commit -m "Update requirements.txt for axio-common $NEW_VERSION"
+git push origin main
 conda deactivate
 
 echo "✅ axio-common $NEW_VERSION installed in both environments."
