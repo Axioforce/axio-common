@@ -72,13 +72,13 @@ class Device(Base):
     best_moment_val_metrics = Column(JSON, nullable=True)
     best_moment_test_metrics = Column(JSON, nullable=True)
 
-    def __init__(self, axf_id: str):
+    def __init__(self, axf_id: str, name: Optional[str] = None):
         """
         Initialize a new device object.
         """
-        super().__init__(axf_id=axf_id)
+        super().__init__(axf_id=axf_id, name=name)
         self.type_id = axf_id.split(".")[0]
-        self.name = TYPE_ID_NAME_MAP.get(self.type_id, "Unknown Device")
+        self.name = name or TYPE_ID_NAME_MAP.get(self.type_id, "Unknown Device")
         self.type_name = TYPE_ID_NAME_MAP.get(self.type_id, "Unknown Device")
         logger.info(f"Device {axf_id} created, type: {self.type_name}")
 

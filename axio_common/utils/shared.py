@@ -90,8 +90,9 @@ def resolve_device(job_config, db: Session):
     device_id = job_config.get("DEVICE_ID").replace("-", ".")
     device = device_by_id(device_id, db)
     if not device:
+        device_name = job_config.get("DEVICE_NAME", None)
         logger.info(f"Device {device_id} not found.")
-        device = Device(device_id)
+        device = Device(device_id, device_name)
         db.add(device)
         db.commit()
         db.refresh(device)
