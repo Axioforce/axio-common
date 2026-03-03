@@ -4,8 +4,8 @@ from datetime import datetime
 from typing import Optional, List
 
 from pydantic import BaseModel
-from sqlalchemy import Column, String, ForeignKey, Integer, Float, DateTime, Boolean, JSON
-from sqlalchemy.orm import Session
+from sqlalchemy import Column, String, ForeignKey, Index, Integer, Float, DateTime, Boolean, JSON
+from sqlalchemy.orm import Session, relationship
 
 from axio_common.database import Base
 from axio_common.logger import logger
@@ -49,8 +49,13 @@ class RunResponse(BaseModel):
 
 class Run(Base):
     __tablename__ = "runs"
+    __table_args__ = (
+        Index("ix_runs_job_id_is_best", "job_id", "is_best"),
+        Index("ix_runs_job_id_is_current", "job_id", "is_current"),
+    )
+
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    job_id = Column(String, ForeignKey("jobs.id"), nullable=False)
+    job_id = Column(String, ForeignKey("jobs.id"), nullable=False, index=True)
     number = Column(Integer, nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False, default=current_time)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=current_time, onupdate=current_time)
@@ -63,11 +68,14 @@ class Run(Base):
     batch_size = Column(Integer, nullable=True)
     epochs = Column(Integer, nullable=True)
     epochs_completed = Column(Integer, default=0)
-    is_best = Column(Boolean, default=False)
-    is_current = Column(Boolean, default=False)
+    is_best = Column(Boolean, default=False, index=True)
+    is_current = Column(Boolean, default=False, index=True)
     train_metrics = Column(JSON, nullable=True)
     val_metrics = Column(JSON, nullable=True)
     test_metrics = Column(JSON, nullable=True)
+
+    # Relationships
+    job = relationship("Job", back_populates="runs", lazy="select")
 
     def initialize_from_config(self, run_config):
         self.learning_rate = run_config['learning_rate']

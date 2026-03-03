@@ -1,7 +1,8 @@
 from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel
-from sqlalchemy import Column, String, TEXT, DateTime, Integer, JSON, BigInteger
+from sqlalchemy import Column, Index, String, TEXT, DateTime, Integer, JSON, BigInteger
+from sqlalchemy.orm import relationship
 
 from axio_common.database import Base
 from axio_common.logger import logger
@@ -54,10 +55,14 @@ class DeviceResponse(BaseModel):
 
 class Device(Base):
     __tablename__ = "devices"
+
     axf_id = Column(String, primary_key=True, unique=True)
     name = Column(String)
-    type_id = Column(String, nullable=False)
+    type_id = Column(String, nullable=False, index=True)
     type_name = Column(String, nullable=False)
+
+    # Relationships
+    jobs = relationship("Job", back_populates="device", lazy="select")
     device_metadata = Column(TEXT, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=current_time)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=current_time, onupdate=current_time)

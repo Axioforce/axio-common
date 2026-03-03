@@ -5,8 +5,8 @@ from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional, List
 
-from sqlalchemy import Column, ForeignKey, JSON, text, String, Float, TEXT, DateTime, Integer, Text, BigInteger
-from sqlalchemy.orm import Session
+from sqlalchemy import Column, ForeignKey, Index, JSON, text, String, Float, TEXT, DateTime, Integer, Text, BigInteger
+from sqlalchemy.orm import Session, relationship
 
 from axio_common.database import Base
 from axio_common.logger import logger
@@ -49,22 +49,26 @@ class JobResponse(BaseModel):
 
 class Job(Base):
     __tablename__ = "jobs"
+    __table_args__ = (
+        Index("ix_jobs_status_queued_at", "status", "queued_at"),
+    )
+
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    device_axf_id = Column(String, ForeignKey("devices.axf_id"), nullable=False)
+    device_axf_id = Column(String, ForeignKey("devices.axf_id"), nullable=False, index=True)
     model_type = Column(String, nullable=False)
     config = Column(TEXT, nullable=False)
-    status = Column(String, default="queued")
+    status = Column(String, default="queued", index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=current_time)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=current_time, onupdate=current_time)
 
     # Individual progress fields
-    timestamp = Column(BigInteger, default=0, nullable=False)
+    timestamp = Column(BigInteger, default=0, nullable=False, index=True)
     run_number = Column(Integer, default=0, nullable=False)
     total_runs = Column(Integer, default=0, nullable=False)
     run_started_at = Column(DateTime(timezone=True), nullable=True)
 
     # Timestamps
-    queued_at = Column(DateTime(timezone=True), nullable=False, default=current_time)
+    queued_at = Column(DateTime(timezone=True), nullable=False, default=current_time, index=True)
     assigned_at = Column(DateTime(timezone=True), nullable=True)
     started_at = Column(DateTime(timezone=True), nullable=True)
     stopped_at = Column(DateTime(timezone=True), nullable=True)
@@ -73,7 +77,11 @@ class Job(Base):
     interrupted_at = Column(DateTime(timezone=True), nullable=True)
 
     duration = Column(Float, default=0.0)
-    hostname = Column(String, nullable=True)
+    hostname = Column(String, nullable=True, index=True)
+
+    # Relationships
+    device = relationship("Device", back_populates="jobs", lazy="select")
+    runs = relationship("Run", back_populates="job", lazy="select", cascade="all, delete-orphan")
 
     def update_model_type(self):
         config = json.loads(self.config)

@@ -2,7 +2,7 @@ import uuid
 
 from pydantic import BaseModel
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Boolean, DateTime, Float, Integer
+from sqlalchemy import Column, Index, String, Boolean, DateTime, Float, Integer
 from sqlalchemy.orm import Session
 from typing import Optional, Union, List
 
@@ -30,11 +30,12 @@ class ClientResponse(BaseModel):
 
 class Client(Base):
     __tablename__ = "clients"
+
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    hostname = Column(String, nullable=True)
+    hostname = Column(String, nullable=True, index=True)
     ip_address = Column(String, nullable=False)
     daemon = Column(Boolean, nullable=False, default=True)
-    status = Column(String, nullable=False, default="active")
+    status = Column(String, nullable=False, default="active", index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=current_time)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=current_time, onupdate=current_time)
     completed_jobs = Column(Integer, default=0)
