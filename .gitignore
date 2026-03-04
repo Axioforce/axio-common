@@ -1,6 +1,12 @@
 # Personal
 firebase-rw-key.json
 
+# Local env overrides
+.env.local
+
+# Editable install source checkouts
+src/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
