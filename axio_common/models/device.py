@@ -48,6 +48,9 @@ class DeviceResponse(BaseModel):
     best_moment_train_metrics: Optional[dict] = None
     best_moment_val_metrics: Optional[dict] = None
     best_moment_test_metrics: Optional[dict] = None
+    anomaly_critical: Optional[int] = 0
+    anomaly_warning: Optional[int] = 0
+    anomaly_details: Optional[list] = None
 
     class Config:
         from_attributes = True  # Enables SQLAlchemy model compatibility
@@ -76,6 +79,11 @@ class Device(Base):
     best_moment_train_metrics = Column(JSON, nullable=True)
     best_moment_val_metrics = Column(JSON, nullable=True)
     best_moment_test_metrics = Column(JSON, nullable=True)
+
+    # Anomaly detection results (persisted at run completion)
+    anomaly_critical = Column(Integer, nullable=True, default=0)
+    anomaly_warning = Column(Integer, nullable=True, default=0)
+    anomaly_details = Column(JSON, nullable=True)
 
     def __init__(self, axf_id: str, name: Optional[str] = None):
         """
@@ -168,7 +176,10 @@ class Device(Base):
             "best_moment_timestamp": self.best_moment_timestamp,
             "best_moment_train_metrics": self.best_moment_train_metrics,
             "best_moment_val_metrics": self.best_moment_val_metrics,
-            "best_moment_test_metrics": self.best_moment_test_metrics
+            "best_moment_test_metrics": self.best_moment_test_metrics,
+            "anomaly_critical": self.anomaly_critical,
+            "anomaly_warning": self.anomaly_warning,
+            "anomaly_details": self.anomaly_details,
         }
 
     @classmethod
