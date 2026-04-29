@@ -1,9 +1,16 @@
 """
 Per-plate baseline snapshots — full-plate "all 8 channels at zero load" captures
-taken at chip initialization (kind='initialization') and post-assembly
-(kind='assembled') from Calibration Setup. Pairs with ForcePlate so drift
-between manufacturing -> initialization -> assembled lifecycle stages is
-queryable per load cell.
+taken at chip initialization (kind='initialization_assembled' or
+'initialization_unassembled') and post-assembly (kind='assembled') from
+Calibration Setup. Pairs with ForcePlate so drift between manufacturing ->
+initialization -> assembled lifecycle stages is queryable per load cell.
+
+The two initialization kinds split on whether the load cells were already
+mechanically mounted in the plate at the time of chip-init: assembled
+resembles 'assembled' captures; unassembled is closer to a manufacturing
+baseline since each load cell is in free state. (Legacy rows tagged
+'initialization' were renamed to 'initialization_assembled' in migration
+b1d2a8e3f9c0 — they pre-date the unassembled flow.)
 
 Per-channel std_x/y/z come from the desktop's tare-samples accumulator and
 distinguish real signal drift from sensor noise. firmware_version + JSON
@@ -22,7 +29,11 @@ from axio_common.database import Base
 from axio_common.utils.model_utils import current_time
 
 
-ASSEMBLED_BASELINE_KINDS = ('initialization', 'assembled')
+ASSEMBLED_BASELINE_KINDS = (
+    'initialization_unassembled',
+    'initialization_assembled',
+    'assembled',
+)
 
 
 class AssembledBaseline(Base):
@@ -31,7 +42,8 @@ class AssembledBaseline(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     device_axf_id = Column(String, ForeignKey("force_plates.device_axf_id"), nullable=False, index=True)
     device_type_id = Column(String, nullable=False)
-    kind = Column(String, nullable=False)  # 'initialization' | 'assembled'
+    # 'initialization_unassembled' | 'initialization_assembled' | 'assembled'
+    kind = Column(String, nullable=False)
     captured_at = Column(DateTime(timezone=True), nullable=False, index=True)
     firmware_version = Column(String, nullable=True)
     # Snapshot of relevant dynamo_config values at capture time. Lets us answer
