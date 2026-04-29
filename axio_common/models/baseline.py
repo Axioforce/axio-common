@@ -71,6 +71,9 @@ class BaselineSensor(Base):
     x = Column(Float, nullable=False)
     y = Column(Float, nullable=False)
     z = Column(Float, nullable=False)
+    std_x = Column(Float, nullable=True)
+    std_y = Column(Float, nullable=True)
+    std_z = Column(Float, nullable=True)
     temp = Column(Float, nullable=True)
     position = Column(String, nullable=True)  # 'inner' | 'outer'
 
@@ -82,6 +85,7 @@ class BaselineSensor(Base):
             "baseline_id": self.baseline_id,
             "sensor_index": self.sensor_index,
             "x": self.x, "y": self.y, "z": self.z,
+            "std_x": self.std_x, "std_y": self.std_y, "std_z": self.std_z,
             "temp": self.temp,
             "position": self.position,
         }
@@ -95,6 +99,9 @@ class BaselineSensorPayload(BaseModel):
     x: float
     y: float
     z: float
+    std_x: Optional[float] = None
+    std_y: Optional[float] = None
+    std_z: Optional[float] = None
     temp: Optional[float] = None
     position: Optional[str] = None
 
