@@ -9,6 +9,7 @@ from .force_plate import (
 from .assembled_baseline import (
     AssembledBaseline, AssembledBaselineSensor, ASSEMBLED_BASELINE_KINDS,
 )
+from .baseline import Baseline, BaselineSensor
 from .load_cell import (
     LoadCell, LoadCellManufacturing, LoadCellNote, MoldNote, parse_load_cell_id,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "Client", "Device", "Job", "Run",
     "ForcePlate", "ForcePlateAssignmentHistory", "ForcePlateAssembledDateHistory",
     "AssembledBaseline", "AssembledBaselineSensor",
+    "Baseline", "BaselineSensor",
     "LoadCell", "LoadCellManufacturing", "LoadCellNote", "MoldNote",
     "CalibrationSession", "CalibrationSessionCalibrator",
     "CORNER_POSITIONS", "ASSEMBLED_BASELINE_KINDS", "CALIBRATION_SESSION_STATUSES",
