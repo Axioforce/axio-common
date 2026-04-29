@@ -38,6 +38,13 @@ class DeviceResponse(BaseModel):
     device_metadata: Optional[dict] = None  # Additional data about the device
     created_at: datetime = current_time()
     updated_at: datetime = current_time()
+    # Date/time the device was physically assembled. Set from the local
+    # AxioforceDynamoPy "Initialize" click; nullable for devices that pre-date
+    # this field. assembled_date_history is an append-only audit list of
+    # {"value": iso_str, "previous": iso_str|None, "changed_at": iso_str,
+    #  "reason": str|None} entries — every edit appends one row.
+    assembled_date: Optional[datetime] = None
+    assembled_date_history: Optional[list] = None
     best_force_run: Optional[int] = None
     best_force_timestamp: Optional[int] = None
     best_force_train_metrics: Optional[dict] = None
@@ -69,6 +76,11 @@ class Device(Base):
     device_metadata = Column(TEXT, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=current_time)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=current_time, onupdate=current_time)
+    # Physical assembly timestamp — sourced from the local "Initialize" click in
+    # AxioforceDynamoPy. Nullable so existing rows don't need backfilling. Edits
+    # are tracked in assembled_date_history (JSON list, append-only).
+    assembled_date = Column(DateTime(timezone=True), nullable=True)
+    assembled_date_history = Column(JSON, nullable=True)
     best_force_run = Column(Integer, nullable=True)
     best_force_timestamp = Column(BigInteger, nullable=True)
     best_force_train_metrics = Column(JSON, nullable=True)
@@ -167,6 +179,8 @@ class Device(Base):
             "device_metadata": self.device_metadata,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "assembled_date": self.assembled_date,
+            "assembled_date_history": self.assembled_date_history,
             "best_force_run": self.best_force_run,
             "best_force_timestamp": self.best_force_timestamp,
             "best_force_train_metrics": self.best_force_train_metrics,
