@@ -14,7 +14,8 @@ from .load_cell import (
     LoadCell, LoadCellManufacturing, LoadCellNote, MoldNote, parse_load_cell_id,
 )
 from .calibration_session import (
-    CalibrationSession, CalibrationSessionCalibrator, CALIBRATION_SESSION_STATUSES,
+    CalibrationSession, CalibrationSessionCalibrator, CalibrationSessionDate,
+    CALIBRATION_SESSION_STATUSES,
 )
 
 __all__ = [
@@ -23,7 +24,7 @@ __all__ = [
     "AssembledBaseline", "AssembledBaselineSensor",
     "Baseline", "BaselineSensor",
     "LoadCell", "LoadCellManufacturing", "LoadCellNote", "MoldNote",
-    "CalibrationSession", "CalibrationSessionCalibrator",
+    "CalibrationSession", "CalibrationSessionCalibrator", "CalibrationSessionDate",
     "CORNER_POSITIONS", "ASSEMBLED_BASELINE_KINDS", "CALIBRATION_SESSION_STATUSES",
     "parse_load_cell_id",
 ]

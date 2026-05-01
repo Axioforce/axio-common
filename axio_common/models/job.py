@@ -13,6 +13,11 @@ from axio_common.logger import logger
 from axio_common.utils.model_utils import current_time
 
 
+# Number of failures (transitions back to "queued" after assignment) before a
+# job is pushed to the back of its priority tier. Lower = more aggressive.
+RETRY_PUSHBACK_THRESHOLD = 1
+
+
 class UpdateJobProgressRequest(BaseModel):
     job_id: str
     run_number: int
@@ -42,6 +47,8 @@ class JobResponse(BaseModel):
     interrupted_at: Optional[datetime]
     duration: float
     hostname: Optional[str]
+    priority: int = 0
+    failure_count: int = 0
 
     class Config:
         from_attributes = True  # Enables SQLAlchemy model compatibility
@@ -51,6 +58,7 @@ class Job(Base):
     __tablename__ = "jobs"
     __table_args__ = (
         Index("ix_jobs_status_queued_at", "status", "queued_at"),
+        Index("ix_jobs_status_priority_queued_at", "status", "priority", "queued_at"),
     )
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -79,6 +87,12 @@ class Job(Base):
     duration = Column(Float, default=0.0)
     hostname = Column(String, nullable=True, index=True)
 
+    # Queue ordering: assignment is ORDER BY priority DESC, queued_at ASC.
+    # Higher priority is assigned first; failure_count tracks requeues after
+    # an assignment so the queue logic can push repeat-failers to the back.
+    priority = Column(Integer, nullable=False, default=0, server_default="0", index=True)
+    failure_count = Column(Integer, nullable=False, default=0, server_default="0")
+
     # Relationships
     device = relationship("Device", back_populates="jobs", lazy="select")
     runs = relationship("Run", back_populates="job", lazy="select", cascade="all, delete-orphan")
@@ -91,7 +105,8 @@ class Job(Base):
         """
         Update the status of the job and log the change.
         """
-        logger.info(f"Job {self.id} status updated: {self.status} -> {status}")
+        prior_status = self.status
+        logger.info(f"Job {self.id} status updated: {prior_status} -> {status}")
         self.status = status
         if status == "assigned":
             self.assigned_at = current_time()
@@ -104,6 +119,17 @@ class Job(Base):
                 from axio_common.utils.shared import client_by_hostname
                 client = client_by_hostname(hostname, db, update_activity=False)
                 client.remove_active_job(db)
+        elif status == "queued" and prior_status not in ("queued", None):
+            # Requeue after an assignment (interrupted, missed heartbeat, etc.).
+            # Bump the failure counter; once it crosses the threshold, push the
+            # job to the back of its priority tier so it stops blocking the queue.
+            self.failure_count = (self.failure_count or 0) + 1
+            if self.failure_count >= RETRY_PUSHBACK_THRESHOLD:
+                self.queued_at = current_time()
+                logger.info(
+                    f"Job {self.id} pushed to back of queue "
+                    f"(failure_count={self.failure_count}, priority={self.priority})"
+                )
 
         if hostname:
             logger.info(f"Job {self.id} assigned to {hostname}")
@@ -245,7 +271,9 @@ class Job(Base):
             "last_heartbeat": self.last_heartbeat,
             "interrupted_at": self.interrupted_at,
             "duration": self.duration,
-            "hostname": self.hostname
+            "hostname": self.hostname,
+            "priority": self.priority,
+            "failure_count": self.failure_count,
         }
 
     @classmethod
