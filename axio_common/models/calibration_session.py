@@ -55,11 +55,20 @@ class CalibrationSession(Base):
         cascade="all, delete-orphan",
         lazy="select",
     )
+    # Unidirectional pointer to the linked Job so consumers can read its
+    # model_type (force/moment) without a second fetch. Loaded eagerly to
+    # avoid N+1 over the LIST endpoint.
+    job = relationship("Job", foreign_keys=[job_id], lazy="joined")
+
+    @property
+    def job_model_type(self) -> Optional[str]:
+        return self.job.model_type if self.job is not None else None
 
     def to_dict(self):
         return {
             "id": self.id,
             "job_id": self.job_id,
+            "job_model_type": self.job_model_type,
             "device_axf_id": self.device_axf_id,
             "status": self.status,
             "status_reason": self.status_reason,
@@ -137,6 +146,7 @@ class CalibrationSessionDateResponse(BaseModel):
 class CalibrationSessionResponse(BaseModel):
     id: int
     job_id: Optional[str]
+    job_model_type: Optional[str] = None
     device_axf_id: str
     status: str
     status_reason: Optional[str]
