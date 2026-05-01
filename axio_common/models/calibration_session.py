@@ -8,11 +8,11 @@ calibration data it was trained on.
 Calibrator names are stored in Title Case so a later submission spelled
 differently ('SKY' vs 'sky' vs 'Sky') doesn't proliferate duplicates.
 
-Discarded sessions get an explicit row with status='discarded' + reason via a
-small "Mark session discarded" sub-flow on Flux2 Calibration Setup; that's the
-only operator-facing input. Sessions that were tossed before any job was
-submitted simply never become rows. Discard rows always carry exactly one date
-child (the date being discarded).
+Status reflects the live-test verdict for the model trained on the session:
+'untested' (default; freshly submitted, awaiting live testing), 'pass'
+(model passed live testing), 'fail' (model failed). The live-testing
+software flips the status via PATCH /calibration-sessions/{id}/status with
+an optional reason captured in `status_reason`.
 """
 from datetime import datetime, date
 from typing import Optional, List
@@ -27,18 +27,18 @@ from axio_common.database import Base
 from axio_common.utils.model_utils import current_time
 
 
-CALIBRATION_SESSION_STATUSES = ('used', 'discarded')
+CALIBRATION_SESSION_STATUSES = ('untested', 'pass', 'fail')
 
 
 class CalibrationSession(Base):
     __tablename__ = "calibration_sessions"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    # Nullable: discarded sessions never had a successful job submission.
+    # Nullable on legacy rows whose source job was purged before backfill.
     job_id = Column(String, ForeignKey("jobs.id"), nullable=True, index=True)
     device_axf_id = Column(String, nullable=False, index=True)
-    status = Column(String, nullable=False, default='used')  # 'used' | 'discarded'
-    discard_reason = Column(Text, nullable=True)
+    status = Column(String, nullable=False, default='untested')  # 'untested' | 'pass' | 'fail'
+    status_reason = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=current_time)
 
@@ -62,7 +62,7 @@ class CalibrationSession(Base):
             "job_id": self.job_id,
             "device_axf_id": self.device_axf_id,
             "status": self.status,
-            "discard_reason": self.discard_reason,
+            "status_reason": self.status_reason,
             "notes": self.notes,
             "created_at": self.created_at,
             "dates": [d.to_dict() for d in (self.dates or [])],
@@ -110,7 +110,8 @@ class CalibrationSessionDatePayload(BaseModel):
 class CalibrationSessionPayload(BaseModel):
     """Single session entry shipped from Neuralizer's submit_job_to_server.
     A submission spanning multiple date directories collapses into ONE payload
-    with all dates listed under `dates`."""
+    with all dates listed under `dates`. New sessions land as 'untested';
+    live-testing software flips status via the status endpoint."""
     device_axf_id: str
     job_id: Optional[str] = None
     dates: List[CalibrationSessionDatePayload] = []
@@ -118,12 +119,11 @@ class CalibrationSessionPayload(BaseModel):
     notes: Optional[str] = None
 
 
-class CalibrationSessionDiscardRequest(BaseModel):
-    """Sent by Flux2 Calibration Setup when an operator marks a failed session."""
-    device_axf_id: str
-    session_date: date
-    discard_reason: str
-    calibration_directory: Optional[str] = None
+class CalibrationSessionStatusUpdate(BaseModel):
+    """Request body for PATCH /calibration-sessions/{id}/status.
+    Sent by the live-testing software once a model has been evaluated."""
+    status: str  # 'untested' | 'pass' | 'fail'
+    reason: Optional[str] = None
 
 
 class CalibrationSessionDateResponse(BaseModel):
@@ -139,7 +139,7 @@ class CalibrationSessionResponse(BaseModel):
     job_id: Optional[str]
     device_axf_id: str
     status: str
-    discard_reason: Optional[str]
+    status_reason: Optional[str]
     notes: Optional[str]
     created_at: datetime
     dates: List[CalibrationSessionDateResponse] = []
@@ -147,3 +147,14 @@ class CalibrationSessionResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class CalibratorAnalytics(BaseModel):
+    """Per-calibrator analytics derived from the session/calibrator junction.
+    Returned by GET /force-plate/calibrators."""
+    name: str
+    session_count: int
+    plates: List[str]
+    pass_count: int
+    fail_count: int
+    untested_count: int
