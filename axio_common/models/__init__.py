@@ -17,6 +17,10 @@ from .calibration_session import (
     CalibrationSession, CalibrationSessionCalibrator, CalibrationSessionDate,
     CALIBRATION_SESSION_STATUSES,
 )
+from .live_test import (
+    LiveTestSession, LiveTestCell, LiveTestAggregate,
+    STAGE_TYPES, STAGE_LOCATIONS, COLOR_BINS,
+)
 
 __all__ = [
     "Client", "Device", "Job", "Run",
@@ -25,6 +29,8 @@ __all__ = [
     "Baseline", "BaselineSensor",
     "LoadCell", "LoadCellManufacturing", "LoadCellNote", "MoldNote",
     "CalibrationSession", "CalibrationSessionCalibrator", "CalibrationSessionDate",
+    "LiveTestSession", "LiveTestCell", "LiveTestAggregate",
     "CORNER_POSITIONS", "ASSEMBLED_BASELINE_KINDS", "CALIBRATION_SESSION_STATUSES",
+    "STAGE_TYPES", "STAGE_LOCATIONS", "COLOR_BINS",
     "parse_load_cell_id",
 ]
