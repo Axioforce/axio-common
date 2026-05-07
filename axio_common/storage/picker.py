@@ -384,7 +384,33 @@ def pick_files(
     return tuple(str(p) for p in paths)
 
 
-# ---------- pick_sessions (multi-select) ----------
+# ---------- pick_sessions (3-pane: devices | sessions | files) ----------
+
+def _short_device_id(device_id: str) -> str:
+    """'10-00000042' -> '10-42', '10-0000000a' -> '10-0a'.
+
+    Strip leading zeros from the ID portion. If the result is shorter than
+    2 chars (e.g. a single trailing 'a'), keep the last 2 chars instead so
+    abbreviations remain unambiguous when discussed verbally.
+    """
+    if "-" not in device_id:
+        return device_id
+    type_part, id_part = device_id.split("-", 1)
+    stripped = id_part.lstrip("0")
+    if len(stripped) < 2:
+        stripped = id_part[-2:]
+    return f"{type_part}-{stripped}"
+
+
+def _device_matches(device_id: str, query: str) -> bool:
+    """Case-insensitive substring match against either the full id or the
+    short form (see _short_device_id). Lets users type any of the natural
+    abbreviations they use verbally: '42', '10-42', '00042', '0a', '10-0a'."""
+    if not query:
+        return True
+    q = query.lower()
+    return q in device_id.lower() or q in _short_device_id(device_id).lower()
+
 
 def pick_sessions(
     parent: Optional[tk.Misc] = None,
@@ -393,22 +419,29 @@ def pick_sessions(
     same_device: bool = True,
     download: bool = False,
 ) -> tuple[str, ...]:
-    """Multi-select version of pick_session(). Returns local session-directory
-    paths for every date directory the user picked. Returns () if cancelled or
-    nothing valid was selected.
+    """3-pane session picker (devices | sessions | files-in-session).
 
-    same_device: if True (default), OK is rejected unless all picks share the
-                 same device — calibration training runs against one device
-                 at a time.
-    download:    if True, download each picked session into the cache before
-                 returning (with a progress dialog). Default False — the
-                 submitter only needs the directory shape and a file listing
-                 to fill out a job config; the daemon handles the actual
-                 download. Set True for picker-driven flows that need the
-                 bytes locally (analysis scripts, etc.).
+    Designed for the calibration submitter workflow: the user knows the
+    device serial they care about and wants to find it fast, then pick
+    one or more sessions for that device. Files pane is informational so
+    the user can sanity-check what's actually in a session before submitting.
 
-    Drop-in for the loop pattern around filedialog.askdirectory() that
-    GUI_NeuralNet_API.edit_selected_dirs uses.
+    Search is forgiving of the abbreviations we use verbally — type '42' or
+    '10-42' or '0a' to filter the device list (see _device_matches).
+
+    Returns:
+        Tuple of local session-dir paths (strings). Empty tuple on cancel.
+
+    Args:
+        parent: optional Tk root/Toplevel. If None, the picker spins up its
+            own hidden root for standalone use.
+        title: window title.
+        same_device: defensive — should always be true given the UI only
+            allows one device at a time, but kept as a kwarg for API symmetry.
+        download: if True, download each picked session into the cache
+            before returning (with a progress dialog). Default False —
+            the submitter only needs the directory shape; the daemon
+            downloads on its end.
     """
     from tkinter import messagebox
 
@@ -419,58 +452,270 @@ def pick_sessions(
 
     top = tk.Toplevel(parent)
     top.title(title)
-    top.geometry("560x560+200+150")
+    top.geometry("1100x600+150+120")
     top.transient(parent)
     top.grab_set()
 
-    container = ttk.Frame(top)
-    container.pack(fill="both", expand=True, padx=8, pady=8)
+    state: dict = {
+        "all_devices": [],
+        "type_filter": "All",
+        "search_text": "",
+        "filtered_devices": [],
+        "selected_device": None,
+        "session_listings_cache": {},  # (device_id, iso) -> SessionListing
+        "result_picks": [],            # list[(device_id, iso)]
+    }
 
-    bt = _BucketTree(container, expand_files=False)
-    bt.tree.configure(selectmode="extended")
-    yscroll = ttk.Scrollbar(container, orient="vertical", command=bt.tree.yview)
-    bt.tree.configure(yscrollcommand=yscroll.set)
-    bt.tree.pack(side="left", fill="both", expand=True)
-    yscroll.pack(side="right", fill="y")
+    # --- top: type filter + search ---
+    top_bar = ttk.Frame(top, padding=(10, 10, 10, 4))
+    top_bar.pack(fill="x")
 
-    btn_frame = ttk.Frame(top)
-    btn_frame.pack(fill="x", padx=8, pady=(0, 8))
+    ttk.Label(top_bar, text="Type:").pack(side="left")
+    type_var = tk.StringVar(value="All")
+    type_radios_frame = ttk.Frame(top_bar)
+    type_radios_frame.pack(side="left", padx=(6, 16))
 
-    state: dict = {"picks": []}  # list of (device_id, date)
+    ttk.Label(top_bar, text="Search:").pack(side="left")
+    search_var = tk.StringVar()
+    search_entry = ttk.Entry(top_bar, textvariable=search_var, width=24)
+    search_entry.pack(side="left", padx=(6, 0))
+    ttk.Label(
+        top_bar,
+        text="(matches '42', '10-42', '0a', etc.)",
+        foreground="#888",
+    ).pack(side="left", padx=(8, 0))
+
+    # --- middle: 3 panes ---
+    panes = ttk.PanedWindow(top, orient="horizontal")
+    panes.pack(fill="both", expand=True, padx=10, pady=(4, 4))
+
+    dev_frame = ttk.LabelFrame(panes, text="Devices")
+    dev_listbox = tk.Listbox(dev_frame, exportselection=False, activestyle="dotbox")
+    dev_scroll = ttk.Scrollbar(dev_frame, command=dev_listbox.yview)
+    dev_listbox.config(yscrollcommand=dev_scroll.set)
+    dev_listbox.pack(side="left", fill="both", expand=True, padx=(4, 0), pady=4)
+    dev_scroll.pack(side="right", fill="y", pady=4)
+    panes.add(dev_frame, weight=2)
+
+    sess_frame = ttk.LabelFrame(panes, text="Sessions")
+    sess_tree = ttk.Treeview(
+        sess_frame, columns=("counts",), selectmode="extended", show="tree headings",
+    )
+    sess_tree.heading("#0", text="Date")
+    sess_tree.heading("counts", text="train / test")
+    sess_tree.column("#0", width=140, anchor="w")
+    sess_tree.column("counts", width=110, anchor="center")
+    sess_scroll = ttk.Scrollbar(sess_frame, command=sess_tree.yview)
+    sess_tree.config(yscrollcommand=sess_scroll.set)
+    sess_tree.pack(side="left", fill="both", expand=True, padx=(4, 0), pady=4)
+    sess_scroll.pack(side="right", fill="y", pady=4)
+    panes.add(sess_frame, weight=2)
+
+    files_frame = ttk.LabelFrame(panes, text="Files in highlighted session")
+    files_tree = ttk.Treeview(
+        files_frame, columns=("kind",), selectmode="none", show="tree headings",
+    )
+    files_tree.heading("#0", text="Filename")
+    files_tree.heading("kind", text="Kind")
+    files_tree.column("#0", width=240, anchor="w")
+    files_tree.column("kind", width=70, anchor="center")
+    files_scroll = ttk.Scrollbar(files_frame, command=files_tree.yview)
+    files_tree.config(yscrollcommand=files_scroll.set)
+    files_tree.pack(side="left", fill="both", expand=True, padx=(4, 0), pady=4)
+    files_scroll.pack(side="right", fill="y", pady=4)
+    panes.add(files_frame, weight=3)
+
+    # --- bottom: status + buttons ---
+    btn_frame = ttk.Frame(top, padding=(10, 4, 10, 10))
+    btn_frame.pack(fill="x")
+    status_var = tk.StringVar(value="Loading devices...")
+    ttk.Label(btn_frame, textvariable=status_var, foreground="#666").pack(side="left")
+
+    def _close():
+        if top.winfo_exists():
+            top.destroy()
+
+    cancel_btn = ttk.Button(btn_frame, text="Cancel", command=_close)
+    ok_btn = ttk.Button(btn_frame, text="OK")
+    cancel_btn.pack(side="right", padx=4)
+    ok_btn.pack(side="right", padx=4)
+
+    # --- logic ---
+
+    def refresh_devices():
+        dev_listbox.delete(0, "end")
+        type_filter = state["type_filter"]
+        q = state["search_text"]
+        filtered = []
+        for dev in state["all_devices"]:
+            if type_filter != "All" and not dev.startswith(f"{type_filter}-"):
+                continue
+            if not _device_matches(dev, q):
+                continue
+            filtered.append(dev)
+        state["filtered_devices"] = filtered
+        for dev in filtered:
+            short = _short_device_id(dev)
+            label = f"{dev}    ({short})" if short != dev else dev
+            dev_listbox.insert("end", label)
+        if filtered:
+            status_var.set(f"{len(filtered)} device(s) match.")
+        else:
+            status_var.set("No devices match. Adjust the type filter or search.")
+
+    def on_search_change(*_):
+        state["search_text"] = search_var.get().strip()
+        refresh_devices()
+
+    def on_type_change(*_):
+        state["type_filter"] = type_var.get()
+        refresh_devices()
+
+    search_var.trace_add("write", on_search_change)
+    type_var.trace_add("write", on_type_change)
+
+    def on_device_selected(_evt=None):
+        sel = dev_listbox.curselection()
+        if not sel:
+            return
+        device_id = state["filtered_devices"][sel[0]]
+        if state["selected_device"] == device_id:
+            return
+        state["selected_device"] = device_id
+        sess_tree.delete(*sess_tree.get_children())
+        files_tree.delete(*files_tree.get_children())
+        status_var.set(f"Loading sessions for {device_id}...")
+        threading.Thread(
+            target=_work_load_sessions, args=(device_id,), daemon=True,
+        ).start()
+
+    dev_listbox.bind("<<ListboxSelect>>", on_device_selected)
+
+    def _work_load_sessions(device_id: str):
+        try:
+            dates = [d for d in _sc.list_dates(device_id) if d != "models"]
+            top.after(0, lambda: _populate_sessions(device_id, dates))
+        except Exception as e:
+            top.after(0, lambda: status_var.set(f"Error loading sessions: {e}"))
+
+    def _populate_sessions(device_id: str, dates: list[str]):
+        # Most-recent first so the common case (just-calibrated device) is
+        # at the top.
+        dates_sorted = sorted(dates, reverse=True)
+        for d in dates_sorted:
+            sess_tree.insert("", "end", iid=d, text=d, values=("loading...",))
+        if dates_sorted:
+            sess_tree.selection_set(dates_sorted[0])
+            sess_tree.focus(dates_sorted[0])
+            _on_session_focus(dates_sorted[0])
+            status_var.set(f"{len(dates_sorted)} session(s) for {device_id}.")
+        else:
+            status_var.set(f"No sessions for {device_id}.")
+        threading.Thread(
+            target=_work_load_session_counts,
+            args=(device_id, dates_sorted),
+            daemon=True,
+        ).start()
+
+    def _work_load_session_counts(device_id: str, dates: list[str]):
+        for d in dates:
+            try:
+                listing = _sc.list_session(device_id, d)
+                state["session_listings_cache"][(device_id, d)] = listing
+                counts = f"{len(listing.train)} / {len(listing.test)}"
+                top.after(0, lambda i=d, c=counts: sess_tree.set(i, "counts", c))
+            except Exception:
+                top.after(0, lambda i=d: sess_tree.set(i, "counts", "?"))
+
+    def _on_session_focus(date: str):
+        device_id = state["selected_device"]
+        if not device_id:
+            return
+        files_tree.delete(*files_tree.get_children())
+        cache_key = (device_id, date)
+        cached = state["session_listings_cache"].get(cache_key)
+        if cached is not None:
+            _populate_files(cached)
+            return
+        files_tree.insert("", "end", text="loading...")
+
+        def work():
+            try:
+                listing = _sc.list_session(device_id, date)
+                state["session_listings_cache"][cache_key] = listing
+                top.after(0, lambda l=listing: _populate_files(l))
+            except Exception as e:
+                msg = f"err: {e}"
+                top.after(0, lambda: (
+                    files_tree.delete(*files_tree.get_children()),
+                    files_tree.insert("", "end", text=msg),
+                ))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _populate_files(listing):
+        files_tree.delete(*files_tree.get_children())
+
+        def _basename(key: str) -> str:
+            name = key.rsplit("/", 1)[-1]
+            return name[:-3] if name.endswith(".csv.gz") else name
+
+        for k in listing.train:
+            files_tree.insert("", "end", text=_basename(k), values=("train",))
+        for k in listing.test:
+            files_tree.insert("", "end", text=_basename(k), values=("test",))
+        if listing.tests_txt:
+            files_tree.insert("", "end", text="tests.txt", values=("misc",))
+
+    def on_session_select(_evt):
+        focused = sess_tree.focus()
+        if focused:
+            _on_session_focus(focused)
+
+    sess_tree.bind("<<TreeviewSelect>>", on_session_select)
 
     def on_ok():
-        picks: list[tuple[str, str]] = []
-        for iid in bt.tree.selection():
-            kind, payload = _split_iid(iid)
-            if kind != _K_DATE:
-                continue
-            device_id, date = payload.split("|", 1)
-            picks.append((device_id, date))
-        if not picks:
+        device_id = state["selected_device"]
+        if not device_id:
+            messagebox.showwarning("No device", "Pick a device first.", parent=top)
+            return
+        sel = sess_tree.selection()
+        if not sel:
             messagebox.showwarning(
-                "Nothing selected",
-                "Pick one or more date directories (not files or folders above them).",
-                parent=top,
+                "No sessions", "Pick at least one session.", parent=top,
             )
             return
-        if same_device and len({d for d, _ in picks}) > 1:
-            messagebox.showerror(
-                "Multiple devices",
-                "Selected sessions must all be from the same device.",
-                parent=top,
-            )
-            return
-        state["picks"] = picks
-        top.destroy()
+        state["result_picks"] = [(device_id, iid) for iid in sel]
+        _close()
 
-    def on_cancel():
-        state["picks"] = []
-        top.destroy()
+    ok_btn.config(command=on_ok)
+    top.protocol("WM_DELETE_WINDOW", _close)
 
-    ttk.Button(btn_frame, text="OK", command=on_ok).pack(side="right", padx=4)
-    ttk.Button(btn_frame, text="Cancel", command=on_cancel).pack(side="right", padx=4)
-    hint = "Ctrl/Shift-click for multi-select. Pick date directories."
-    ttk.Label(btn_frame, text=hint, foreground="#666").pack(side="left")
+    # --- initial load: types + devices ---
+
+    def _work_initial_load():
+        try:
+            types = _sc.list_device_types()
+            all_devices: list[str] = []
+            for t in types:
+                all_devices.extend(_sc.list_devices(t))
+            top.after(0, lambda: _populate_initial(types, sorted(all_devices)))
+        except Exception as e:
+            top.after(0, lambda: status_var.set(f"Error loading bucket: {e}"))
+
+    def _populate_initial(types: list[str], devices: list[str]):
+        ttk.Radiobutton(
+            type_radios_frame, text="All", variable=type_var, value="All",
+        ).pack(side="left")
+        for t in types:
+            ttk.Radiobutton(
+                type_radios_frame, text=t, variable=type_var, value=t,
+            ).pack(side="left", padx=2)
+        state["all_devices"] = devices
+        refresh_devices()
+        search_entry.focus_set()
+
+    threading.Thread(target=_work_initial_load, daemon=True).start()
 
     top.wait_window()
     if owns_root:
@@ -479,18 +724,19 @@ def pick_sessions(
         except tk.TclError:
             pass
 
-    picks = state["picks"]
+    picks = state["result_picks"]
     if not picks:
         return ()
 
+    if same_device and len({d for d, _ in picks}) > 1:
+        # Defensive — UI only allows one device, but if that ever changes...
+        return ()
+
     if not download:
-        # No-I/O path: the submitter only needs the directory shape. Compute
-        # local_session_dir for each pick and hand them back. The daemon
-        # will fetch bytes when the job runs.
         return tuple(str(_sc.local_session_dir(d, dt)) for d, dt in picks)
 
-    # Pre-list each session so we know the total file count for the progress
-    # bar before we start downloading.
+    # Download path (with progress dialog) — preserved for callers that pass
+    # download=True.
     listings = [_sc.list_session(d, dt) for d, dt in picks]
     total = sum(len(l.all_keys()) for l in listings)
 
