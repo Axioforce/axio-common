@@ -160,6 +160,18 @@ def cache_path_for_key(key: str, cache_root: Path | None = None) -> Path:
     return root / translated
 
 
+def local_session_dir(
+    device_id: str, iso_date: str, cache_root: Path | None = None,
+) -> Path:
+    """Local cache path for a session — where files would live if downloaded.
+
+    No network I/O. Use this when you need the session directory shape (for
+    config paths, file pickers, etc.) without paying for a download.
+    """
+    root = Path(cache_root) if cache_root else DEFAULT_CACHE_ROOT
+    return root / device_type(device_id) / device_id / _dotted_from_iso(iso_date)
+
+
 # ---------- listing ----------
 
 def list_prefix(prefix: str, recursive: bool = True) -> list[str]:
@@ -250,6 +262,30 @@ def list_session(device_id: str, date: str) -> SessionListing:
         else:
             other.append(k)
     return SessionListing(train=sorted(train), test=sorted(test), tests_txt=tests_txt, other=sorted(other))
+
+
+def list_session_local_paths(
+    device_id: str, date: str, cache_root: Path | None = None,
+) -> dict[str, list[str] | Optional[str]]:
+    """List the local cache paths a session WOULD have if downloaded.
+
+    Returns {"train": [...], "test": [...], "tests_txt": str | None}.
+    Each path is the eventual gunzipped/dotted-date local file path —
+    i.e. cache_path_for_key applied to the bucket key.
+
+    Useful for filling out a job config (TRAIN_INPUT_DIR / TEST_INPUT_DIR)
+    on a submitter machine that doesn't actually need the file bytes — the
+    daemon will download on its end.
+    """
+    listing = list_session(device_id, date)
+    return {
+        "train": [str(cache_path_for_key(k, cache_root)) for k in listing.train],
+        "test": [str(cache_path_for_key(k, cache_root)) for k in listing.test],
+        "tests_txt": (
+            str(cache_path_for_key(listing.tests_txt, cache_root))
+            if listing.tests_txt else None
+        ),
+    }
 
 
 # ---------- download / cache ----------

@@ -380,14 +380,21 @@ def pick_sessions(
     *,
     title: str = "Select sessions",
     same_device: bool = True,
+    download: bool = False,
 ) -> tuple[str, ...]:
     """Multi-select version of pick_session(). Returns local session-directory
-    paths for every date directory the user picked, after downloading them
-    into the cache. Returns () if cancelled or nothing valid was selected.
+    paths for every date directory the user picked. Returns () if cancelled or
+    nothing valid was selected.
 
     same_device: if True (default), OK is rejected unless all picks share the
                  same device — calibration training runs against one device
                  at a time.
+    download:    if True, download each picked session into the cache before
+                 returning (with a progress dialog). Default False — the
+                 submitter only needs the directory shape and a file listing
+                 to fill out a job config; the daemon handles the actual
+                 download. Set True for picker-driven flows that need the
+                 bytes locally (analysis scripts, etc.).
 
     Drop-in for the loop pattern around filedialog.askdirectory() that
     GUI_NeuralNet_API.edit_selected_dirs uses.
@@ -464,6 +471,12 @@ def pick_sessions(
     picks = state["picks"]
     if not picks:
         return ()
+
+    if not download:
+        # No-I/O path: the submitter only needs the directory shape. Compute
+        # local_session_dir for each pick and hand them back. The daemon
+        # will fetch bytes when the job runs.
+        return tuple(str(_sc.local_session_dir(d, dt)) for d, dt in picks)
 
     # Pre-list each session so we know the total file count for the progress
     # bar before we start downloading.
