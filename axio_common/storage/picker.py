@@ -43,7 +43,18 @@ _PLACEHOLDER = "__loading__"
 
 
 def _split_iid(iid: str) -> tuple[str, str]:
-    """iid format: '<kind>:<payload>'. Payload encoding depends on kind."""
+    """iid format: '<kind>:<payload>'. Payload encoding depends on kind.
+
+    Tree placeholder iids end with '/<_PLACEHOLDER>' (the "loading..." rows
+    inserted under collapsed nodes). They share the parent's '<kind>:' prefix,
+    so a naive partition would mis-classify a placeholder as its parent's
+    kind and let it slip through kind-filters in on_ok handlers — producing
+    bogus picks like (device_id, '<iso>/__loading__') that flow downstream
+    into mangled cache paths. Normalize them to ('placeholder', '') so every
+    caller can filter with one uniform check.
+    """
+    if iid == _PLACEHOLDER or iid.endswith(f"/{_PLACEHOLDER}"):
+        return "placeholder", ""
     kind, _, payload = iid.partition(":")
     return kind, payload
 
