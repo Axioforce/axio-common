@@ -25,7 +25,7 @@ Configuration via env vars (boto3 picks them up automatically):
     AWS_ENDPOINT_URL_S3       (default: https://fly.storage.tigris.dev)
     AWS_REGION                (default: auto)
     BUCKET_NAME               (default: axioforce-calibration)
-    AXIO_CALIBRATION_CACHE    (default: ~/AxioforceCache)
+    AXIO_CALIBRATION_CACHE    (default: ~/.axio-cache)
 
 Cache: ensure_local() lazily downloads keys to AXIO_CALIBRATION_CACHE, mirroring the
 bucket layout but inserting "calibration_data/" between the date and {train,test}
@@ -56,7 +56,7 @@ DEFAULT_ENDPOINT = "https://fly.storage.tigris.dev"
 DEFAULT_REGION = "auto"
 DEFAULT_BUCKET = "axioforce-calibration"
 DEFAULT_CACHE_ROOT = Path(
-    os.environ.get("AXIO_CALIBRATION_CACHE", str(Path.home() / "AxioforceCache"))
+    os.environ.get("AXIO_CALIBRATION_CACHE", str(Path.home() / ".axio-cache"))
 )
 
 DEVICE_ID_RE = re.compile(r"^([0-9a-fA-F]{2})-[0-9a-fA-F]+$")
