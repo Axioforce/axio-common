@@ -19,12 +19,28 @@ CSVs are gzip-compressed in the bucket (.csv.gz extension). pandas.read_csv hand
 the .gz extension transparently on the read side, so consumer code that reads CSVs
 needs no change beyond using the cached .csv.gz path.
 
-Configuration via env vars (boto3 picks them up automatically):
-    AWS_ACCESS_KEY_ID
-    AWS_SECRET_ACCESS_KEY
+Two backends are supported, selected automatically:
+
+  - **S3 backend** (boto3 direct): used when AWS_ACCESS_KEY_ID and
+    AWS_SECRET_ACCESS_KEY are both set in the env. This is the
+    high-throughput developer/server path with no extra hops.
+
+  - **Server-mediated backend** (presigned URLs via axio-server): used when
+    AWS creds are NOT set (typical of daemon machines, where we don't want
+    to ship the bucket secret). List/dates/devices/sessions go to
+    `<AXIO_SERVER_URL>/storage/*`; downloads use a presigned URL minted by
+    axio-server, then a plain GET to Tigris (egress is free, no proxy load
+    on axio-server). The bucket secret stays on axio-server only.
+
+Override the auto-pick with AXIO_STORAGE_BACKEND=s3 or =server.
+
+Configuration via env vars:
+    AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY  (S3 backend; absence implies server)
     AWS_ENDPOINT_URL_S3       (default: https://fly.storage.tigris.dev)
     AWS_REGION                (default: auto)
     BUCKET_NAME               (default: axioforce-calibration)
+    AXIO_SERVER_URL           (default: https://axio-server.fly.dev) — server backend
+    AXIO_STORAGE_BACKEND      ("s3" | "server"; default auto)
     AXIO_CALIBRATION_CACHE    (default: ~/.axio-cache)
 
 Cache: ensure_local() lazily downloads keys to AXIO_CALIBRATION_CACHE, mirroring the
@@ -41,9 +57,12 @@ from __future__ import annotations
 
 import gzip
 import io
+import json as _json
 import os
 import re
 import shutil
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Optional, Sequence
@@ -51,6 +70,8 @@ from typing import Callable, Iterable, Optional, Sequence
 import boto3
 from botocore.client import Config
 from botocore.exceptions import ClientError
+
+DEFAULT_AXIO_SERVER_URL = "https://axio-server.fly.dev"
 
 DEFAULT_ENDPOINT = "https://fly.storage.tigris.dev"
 DEFAULT_REGION = "auto"
@@ -77,6 +98,48 @@ def _translate_iso_dates(key: str) -> str:
         _dotted_from_iso(p) if ISO_DATE_RE.match(p) else p
         for p in key.split("/")
     )
+
+
+# ---------- backend selection ----------
+
+def _axio_server_url() -> str:
+    """Base URL of axio-server for the server-mediated backend."""
+    url = os.environ.get("AXIO_SERVER_URL")
+    return url.rstrip("/") if url else DEFAULT_AXIO_SERVER_URL
+
+
+def _use_server_backend() -> bool:
+    """True when read/list/download go through axio-server instead of boto3
+    direct. Auto-picks based on AWS creds, overridable via AXIO_STORAGE_BACKEND."""
+    explicit = os.environ.get("AXIO_STORAGE_BACKEND", "").strip().lower()
+    if explicit == "server":
+        return True
+    if explicit == "s3":
+        return False
+    has_creds = bool(os.environ.get("AWS_ACCESS_KEY_ID")) and bool(
+        os.environ.get("AWS_SECRET_ACCESS_KEY")
+    )
+    return not has_creds
+
+
+def _server_get_json(path: str, timeout: int = 30):
+    """GET <server>/path and return the parsed JSON body."""
+    url = f"{_axio_server_url()}{path}"
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        return _json.loads(resp.read())
+
+
+def _server_post_json(path: str, body: dict, timeout: int = 30):
+    """POST JSON to <server>/path and return the parsed JSON body."""
+    url = f"{_axio_server_url()}{path}"
+    req = urllib.request.Request(
+        url,
+        data=_json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return _json.loads(resp.read())
+
 
 _client = None
 
@@ -206,11 +269,16 @@ def list_top_dirs(prefix: str = "") -> list[str]:
 
 def list_device_types() -> list[str]:
     """Top-level type directories, e.g. ['10', '11', '12']."""
+    if _use_server_backend():
+        return _server_get_json("/storage/device-types")
     return list_top_dirs("")
 
 
 def list_devices(device_type_id: str) -> list[str]:
     """Device ids under a type, e.g. ['10-00000002', '10-00000003', ...]."""
+    if _use_server_backend():
+        from urllib.parse import quote
+        return _server_get_json(f"/storage/devices?type={quote(device_type_id)}")
     return list_top_dirs(f"{device_type_id}/")
 
 
@@ -219,6 +287,11 @@ def list_dates(device_id: str) -> list[str]:
 
     Returns ISO dates first (sorted) then 'models' if present.
     """
+    if _use_server_backend():
+        from urllib.parse import quote
+        # Server endpoint already excludes 'models'; re-append it for parity
+        # with the s3 path. (The daemon flow doesn't care, but the picker does.)
+        return _server_get_json(f"/storage/sessions/{quote(device_id)}/dates")
     children = list_top_dirs(device_prefix(device_id))
     dates = sorted(c for c in children if c != "models")
     if "models" in children:
@@ -247,6 +320,18 @@ class SessionListing:
 
 def list_session(device_id: str, date: str) -> SessionListing:
     """All keys under one (device, date) session, split by kind."""
+    if _use_server_backend():
+        from urllib.parse import quote
+        data = _server_get_json(
+            f"/storage/sessions/{quote(device_id)}/{quote(date)}"
+        )
+        return SessionListing(
+            train=sorted(data.get("train", []) or []),
+            test=sorted(data.get("test", []) or []),
+            tests_txt=data.get("tests_txt"),
+            # Server doesn't surface 'other' yet; keep it empty when missing.
+            other=sorted(data.get("other", []) or []),
+        )
     keys = list_prefix(session_prefix(device_id, date), recursive=True)
     train, test, other = [], [], []
     tests_txt: Optional[str] = None
@@ -306,13 +391,37 @@ def ensure_local(key: str, cache_root: Path | None = None) -> Path:
 
     .csv.gz keys are decompressed on the way in so the local file ends in plain
     .csv — keeps `glob('*.csv')` and the existing date-folder walkers in
-    AxioforceNeuralizer working without modification."""
+    AxioforceNeuralizer working without modification.
+
+    Backend dispatch: with AWS creds set, pulls from Tigris directly via
+    boto3. Without creds, asks axio-server for a presigned URL and GETs the
+    bytes from Tigris through it (no proxy load on axio-server itself).
+    """
     local = cache_path_for_key(key, cache_root)
     if local.exists():
         return local
     local.parent.mkdir(parents=True, exist_ok=True)
-    s3 = _client_singleton()
     tmp = local.with_suffix(local.suffix + ".part")
+
+    if _use_server_backend():
+        # Server-mediated: small POST for the URL, then a direct GET to
+        # Tigris (bandwidth-free egress per the bucket pricing).
+        info = _server_post_json(
+            "/storage/presigned-download", {"key": key, "expires_in": 3600},
+        )
+        url = info["url"]
+        if key.endswith(".csv.gz"):
+            with urllib.request.urlopen(url, timeout=300) as resp:
+                body = resp.read()
+            with gzip.GzipFile(fileobj=io.BytesIO(body)) as gz, open(tmp, "wb") as dst:
+                shutil.copyfileobj(gz, dst, length=1024 * 1024)
+        else:
+            with urllib.request.urlopen(url, timeout=300) as resp, open(tmp, "wb") as dst:
+                shutil.copyfileobj(resp, dst, length=1024 * 1024)
+        tmp.replace(local)
+        return local
+
+    s3 = _client_singleton()
     if key.endswith(".csv.gz"):
         body = s3.get_object(Bucket=_bucket(), Key=key)["Body"].read()
         with gzip.GzipFile(fileobj=io.BytesIO(body)) as gz, open(tmp, "wb") as dst:
