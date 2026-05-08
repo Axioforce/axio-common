@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from sqlalchemy import Column, ForeignKey, Index, JSON, text, String, Float, TEXT, DateTime, Integer, Text, BigInteger
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session, relationship
 
 from axio_common.database import Base
@@ -49,6 +50,7 @@ class JobResponse(BaseModel):
     hostname: Optional[str]
     priority: int = 0
     failure_count: int = 0
+    allowed_hostnames: Optional[List[str]] = None
 
     class Config:
         from_attributes = True  # Enables SQLAlchemy model compatibility
@@ -92,6 +94,12 @@ class Job(Base):
     # an assignment so the queue logic can push repeat-failers to the back.
     priority = Column(Integer, nullable=False, default=0, server_default="0", index=True)
     failure_count = Column(Integer, nullable=False, default=0, server_default="0")
+
+    # Restrict which daemons can pick this job up. NULL or empty = any daemon
+    # is allowed (the historical behavior). Non-empty list = only daemons whose
+    # hostname matches one of these can fetch it. Used for targeted
+    # rollouts/dogfooding ("send this job specifically to my dev box").
+    allowed_hostnames = Column(ARRAY(String), nullable=True)
 
     # Relationships
     device = relationship("Device", back_populates="jobs", lazy="select")
@@ -274,6 +282,7 @@ class Job(Base):
             "hostname": self.hostname,
             "priority": self.priority,
             "failure_count": self.failure_count,
+            "allowed_hostnames": list(self.allowed_hostnames) if self.allowed_hostnames else None,
         }
 
     @classmethod
@@ -320,6 +329,9 @@ class SimpleJob(BaseModel):
 class JobRequest(BaseModel):
     hostname: str
     config: dict
+    # Restrict which daemons can pick up this job. None or [] = any daemon
+    # (historical behavior). A list of hostnames = only those daemons.
+    allowed_hostnames: Optional[List[str]] = None
 
 
 class FetchJobRequest(BaseModel):
