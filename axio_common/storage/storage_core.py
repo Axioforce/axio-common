@@ -40,6 +40,9 @@ Configuration via env vars:
     AWS_REGION                (default: auto)
     BUCKET_NAME               (default: axioforce-calibration)
     AXIO_SERVER_URL           (default: https://axio-server.fly.dev) — server backend
+    AXIO_STORAGE_TOKEN        bearer token for axio-server's storage router
+                              (server-mediated backend; sent as
+                              'Authorization: Bearer <token>' on every call)
     AXIO_STORAGE_BACKEND      ("s3" | "server"; default auto)
     AXIO_CALIBRATION_CACHE    (default: ~/.axio-cache)
 
@@ -122,20 +125,30 @@ def _use_server_backend() -> bool:
     return not has_creds
 
 
+def _server_auth_headers() -> dict:
+    """Authorization header for axio-server's storage router. Empty when no
+    token is configured — the server allows that in dev / when the env var
+    is unset on its side."""
+    token = os.environ.get("AXIO_STORAGE_TOKEN")
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 def _server_get_json(path: str, timeout: int = 30):
     """GET <server>/path and return the parsed JSON body."""
     url = f"{_axio_server_url()}{path}"
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
+    req = urllib.request.Request(url, headers=_server_auth_headers())
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         return _json.loads(resp.read())
 
 
 def _server_post_json(path: str, body: dict, timeout: int = 30):
     """POST JSON to <server>/path and return the parsed JSON body."""
     url = f"{_axio_server_url()}{path}"
+    headers = {"Content-Type": "application/json", **_server_auth_headers()}
     req = urllib.request.Request(
         url,
         data=_json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return _json.loads(resp.read())
@@ -530,10 +543,16 @@ def upload_file(
     If compress_csv=True and the local file ends with .csv, the upload is
     gzip-compressed in flight and the key gets a .gz extension appended (if
     not already present).
+
+    Backend selection mirrors the read path:
+      - S3 backend (creds present): boto3 puts the body directly to Tigris.
+      - Server-mediated backend (no creds): asks axio-server for a presigned
+        PUT URL, then PUTs the body straight to Tigris over that URL. The
+        bucket secret never leaves axio-server.
     """
     local = Path(local_path)
-    s3 = _client_singleton()
 
+    # Materialize the body once so both backends use the same bytes.
     if compress_csv and local.suffix.lower() == ".csv":
         if not key.endswith(".gz"):
             key = key + ".gz"
@@ -542,8 +561,37 @@ def upload_file(
             fileobj=buf, mode="wb", compresslevel=6, mtime=0
         ) as gz:
             shutil.copyfileobj(src, gz, length=1024 * 1024)
-        buf.seek(0)
-        s3.upload_fileobj(buf, _bucket(), key, ExtraArgs={"ContentType": "application/gzip"})
+        body = buf.getvalue()
+        content_type = "application/gzip"
+    else:
+        with open(local, "rb") as src:
+            body = src.read()
+        content_type = "application/octet-stream"
+
+    if _use_server_backend():
+        info = _server_post_json(
+            "/storage/presigned-upload-by-key",
+            {"key": key, "expires_in": 3600},
+        )
+        put_req = urllib.request.Request(
+            info["url"],
+            data=body,
+            method="PUT",
+            headers={"Content-Type": content_type},
+        )
+        # Long timeout: a multi-MB CSV upload over a slow link can take a
+        # while, but this is a one-shot PUT with no retry inside; failure
+        # bubbles up to the caller.
+        with urllib.request.urlopen(put_req, timeout=300) as resp:
+            resp.read()  # drain
+        return key
+
+    s3 = _client_singleton()
+    if compress_csv and local.suffix.lower() == ".csv":
+        s3.upload_fileobj(
+            io.BytesIO(body), _bucket(), key,
+            ExtraArgs={"ContentType": content_type},
+        )
     else:
         s3.upload_file(str(local), _bucket(), key)
     return key
