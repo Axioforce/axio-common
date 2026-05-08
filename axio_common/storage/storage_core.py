@@ -437,20 +437,60 @@ def download_files(
     cache_root: Path | None = None,
     *,
     progress: Callable[[int, int, Optional[str]], None] | None = None,
+    workers: int = 8,
 ) -> list[Path]:
-    """ensure_local() each key, return their local paths in the same order.
+    """ensure_local() each key in parallel, return local paths in listing order.
 
-    progress: optional callable(idx, total, key) for per-file progress reporting.
+    Parallelizes across keys so a session of dozens of small CSVs can saturate
+    available bandwidth instead of bottlenecking on per-file TLS/RTT
+    overhead. Both backends (boto3 direct and server-mediated presigned URLs)
+    benefit — the server backend especially, since it doubles the per-file
+    RTT (server hop + Tigris hop). 8 workers matches the migration script
+    and gets us close to the network ceiling without overwhelming axio-server
+    in the server-mediated case.
+
+    progress: optional callable(idx, total, key). Fires AFTER each completion
+              with idx = number of files completed so far and key = the file
+              just completed. The final tick is progress(total, total, None).
+    workers:  thread pool size. Default 8. Set to 1 to disable parallelism
+              (deterministic ordering, easier debugging).
     """
-    paths: list[Path] = []
-    total = len(keys)
-    for i, k in enumerate(keys):
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    n = len(keys)
+    if n == 0:
         if progress:
-            progress(i, total, k)
-        paths.append(ensure_local(k, cache_root))
+            progress(0, 0, None)
+        return []
+
+    paths: list[Optional[Path]] = [None] * n
+
+    if workers <= 1 or n == 1:
+        for i, k in enumerate(keys):
+            paths[i] = ensure_local(k, cache_root)
+            if progress:
+                progress(i + 1, n, k)
+        if progress:
+            progress(n, n, None)
+        return [p for p in paths]  # type: ignore[misc]
+
+    completed = 0
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {
+            ex.submit(ensure_local, k, cache_root): (i, k)
+            for i, k in enumerate(keys)
+        }
+        for fut in as_completed(futures):
+            i, k = futures[fut]
+            # fut.result() raises any download exception — propagating fails
+            # the whole batch fast, which is what we want.
+            paths[i] = fut.result()
+            completed += 1
+            if progress:
+                progress(completed, n, k)
     if progress:
-        progress(total, total, None)
-    return paths
+        progress(n, n, None)
+    return [p for p in paths]  # type: ignore[misc]
 
 
 def download_session(
@@ -459,6 +499,7 @@ def download_session(
     cache_root: Path | None = None,
     *,
     progress: Callable[[int, int, Optional[str]], None] | None = None,
+    workers: int = 8,
 ) -> Path:
     """Download every file in a session and return the local session directory.
 
@@ -469,7 +510,9 @@ def download_session(
         <dir>/tests.txt
     """
     listing = list_session(device_id, date)
-    download_files(listing.all_keys(), cache_root=cache_root, progress=progress)
+    download_files(
+        listing.all_keys(), cache_root=cache_root, progress=progress, workers=workers,
+    )
     root = Path(cache_root) if cache_root else DEFAULT_CACHE_ROOT
     return root / device_type(device_id) / device_id / _dotted_from_iso(date)
 
