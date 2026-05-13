@@ -73,6 +73,11 @@ class CalibrationBucketSession(Base):
     # True when an admin has set a per-(family, session_number) override.
     # Resolved at API time, not stored on this row.
     is_overridden = Column(Boolean, nullable=False, default=False)
+    # Activity IDs (joined form, e.g. "TR-90S") that the calibrator marked
+    # as "known missing, accept and move on". An activity in this list
+    # counts toward done_count even though no bucket file exists. Stored as
+    # JSON because the list is small and queries always load the parent row.
+    acknowledged_missing = Column(JSON, nullable=True)
 
     created_at = Column(DateTime(timezone=True), nullable=False, default=current_time)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=current_time, onupdate=current_time)
@@ -167,6 +172,7 @@ class CalibrationBucketSessionResponse(BaseModel):
     flag_complete: bool = False
     flag_soft_deleted: bool = False
     is_overridden: bool = False
+    acknowledged_missing: Optional[List[str]] = None
 
     class Config:
         from_attributes = True
