@@ -102,43 +102,46 @@ def family_for_device_id(device_id: str) -> Optional[str]:
 # it's the operator's intended capture sequence and the UI shows activities
 # in this order.
 DEFAULT_BY_TYPE_AND_SESSION: Dict[str, Dict[int, List[str]]] = {
+    # Lite procedures: identical Day 1 and Day 2, all four STK files each day.
     "lite": {
         1: [
             "TR-BER", "TR-45V", "TR-HOP", "TR-90S", "TR-SLH", "TR-LUN",
             "TR-STA", "TR-HBW",
             "TE-45V", "TE-HBW", "TE-OLS", "TE-TLS", "TE-HOP",
-            "TR-STK1", "TR-STK2", "TR-TIL", "TR-PLY",
+            "TR-STK1", "TR-STK2", "TR-STK3", "TR-STK4", "TR-TIL", "TR-PLY",
         ],
         2: [
             "TR-BER", "TR-45V", "TR-HOP", "TR-90S", "TR-SLH", "TR-LUN",
             "TR-STA", "TR-HBW",
             "TE-45V", "TE-HBW", "TE-OLS", "TE-TLS", "TE-HOP",
-            "TR-STK3", "TR-STK4", "TR-TIL", "TR-PLY",
+            "TR-STK1", "TR-STK2", "TR-STK3", "TR-STK4", "TR-TIL", "TR-PLY",
         ],
     },
+    # LP procedures: Day 1 uses STK1+STK2; Day 2 uses STK3+STK4 in reversed order.
     "lp": {
         1: [
             "TR-BER", "TR-45V", "TR-90S", "TR-STA",
             "TE-45V", "TE-HBW", "TE-OLS", "TE-TLS", "TE-HOP",
             "TR-HOP", "TR-SLH", "TR-LUN", "TR-LBJ", "TR-HBW",
-            "TR-STK1", "TR-STK2", "TR-STK3", "TR-STK4", "TR-TIL", "TR-PLY",
+            "TR-STK1", "TR-STK2", "TR-TIL", "TR-PLY",
         ],
         2: [
-            "TR-PLY", "TR-TIL", "TR-STK1", "TR-STK2", "TR-STK3", "TR-STK4",
+            "TR-PLY", "TR-TIL", "TR-STK3", "TR-STK4",
             "TR-HBW", "TR-LBJ", "TR-LUN", "TR-SLH", "TR-HOP",
             "TE-HOP", "TE-TLS", "TE-OLS", "TE-HBW", "TE-45V",
             "TR-STA", "TR-90S", "TR-45V", "TR-BER",
         ],
     },
+    # XL procedures: identical to LP per the current calibration spec.
     "xl": {
         1: [
             "TR-BER", "TR-45V", "TR-90S", "TR-STA",
             "TE-45V", "TE-HBW", "TE-OLS", "TE-TLS", "TE-HOP",
             "TR-HOP", "TR-SLH", "TR-LUN", "TR-LBJ", "TR-HBW",
-            "TR-STK1", "TR-STK2", "TR-STK3", "TR-STK4", "TR-TIL", "TR-PLY",
+            "TR-STK1", "TR-STK2", "TR-TIL", "TR-PLY",
         ],
         2: [
-            "TR-PLY", "TR-TIL", "TR-STK1", "TR-STK2", "TR-STK3", "TR-STK4",
+            "TR-PLY", "TR-TIL", "TR-STK3", "TR-STK4",
             "TR-HBW", "TR-LBJ", "TR-LUN", "TR-SLH", "TR-HOP",
             "TE-HOP", "TE-TLS", "TE-OLS", "TE-HBW", "TE-45V",
             "TR-STA", "TR-90S", "TR-45V", "TR-BER",
