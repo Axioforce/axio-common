@@ -2,20 +2,27 @@
 Canonical calibration-activity registry.
 
 Lives in axio-common so the DAQ, axio-server, and any analysis tool all
-agree on what activities exist, what each one means, and which set is
-expected in a complete session.
+agree on what activities exist, what each one means, and the expected
+set per (plate_family, session_number) for a complete calibration day.
 
-Per-session overrides live in the bucket as
-    <type>/<device>/<date>/expected_activities.json
-with shape:
-    {"expected": ["TR-BER", "TR-45V", ...]}
+Plate families are the calibration-procedure groupings:
+    "lite" — type ids 06, 10
+    "lp"   — type ids 07, 11 (Launchpad)
+    "xl"   — type ids 08, 12
 
-If that file doesn't exist for a session, DEFAULT_EXPECTED is used.
+The expected set for a session is resolved as:
+    1. If <bucket>/_config/session_expected_activities.json has an entry for
+       (plate_family, session_number), use it.
+    2. Otherwise fall back to DEFAULT_BY_TYPE_AND_SESSION[plate_family][N].
+    3. As a last resort fall back to DEFAULT_EXPECTED (all activities).
+
+axio-server owns the bucket-side override; this module just owns the
+defaults and helpers.
 """
 from __future__ import annotations
 
 import re
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 # Activity catalog split by kind. Joined form is "TR-<id>" / "TE-<id>",
 # matching the filename pattern used everywhere else.
@@ -35,6 +42,7 @@ ACTIVITIES: Dict[str, Dict[str, str]] = {
         "STK4": "Sticky-note set 4 — hand-push, step, stand, bounce",
         "TIL":  "Tile under feet — hand-push, step, stand, bounce",
         "PLY":  "Plywood under feet — hand-push, step, stand, bounce (stand on plate after setup to settle)",
+        "LBJ":  "LBJ — dynamic-load capture (used in LP and XL procedures)",
     },
     "test": {
         "45V": "45 lb dumbbell vertical, 5×4 grid, snake from front-left, 30s total (lift the dumbbell, don't slide it)",
@@ -58,12 +66,103 @@ def activity_description(activity_id: str) -> str:
     return _FLAT.get(activity_id, "")
 
 
-# Default expected set when a session has no expected_activities.json
-# override. All 19 activities in order: trains first, then tests.
+# Default expected set when no plate-family default applies. All activities
+# in order: trains first, then tests. Includes LBJ.
 DEFAULT_EXPECTED: List[str] = (
     [f"TR-{code}" for code in ACTIVITIES["train"].keys()]
     + [f"TE-{code}" for code in ACTIVITIES["test"].keys()]
 )
+
+
+# Device type id (first segment of device_id, e.g. "10" of "10-00000002") to
+# plate-family name. Added type ids only need to be mapped here.
+TYPE_ID_TO_FAMILY: Dict[str, str] = {
+    "06": "lite",
+    "10": "lite",
+    "07": "lp",
+    "11": "lp",
+    "08": "xl",
+    "12": "xl",
+}
+
+
+def family_for_type_id(type_id: str) -> Optional[str]:
+    """'10' -> 'lite'. None when no mapping exists."""
+    return TYPE_ID_TO_FAMILY.get((type_id or "").lower())
+
+
+def family_for_device_id(device_id: str) -> Optional[str]:
+    """'10-00000002' -> 'lite'. None when no mapping exists."""
+    if not device_id or "-" not in device_id:
+        return None
+    return family_for_type_id(device_id.split("-", 1)[0])
+
+
+# Per-(plate_family, session_number) calibration procedures. Order matters —
+# it's the operator's intended capture sequence and the UI shows activities
+# in this order.
+DEFAULT_BY_TYPE_AND_SESSION: Dict[str, Dict[int, List[str]]] = {
+    "lite": {
+        1: [
+            "TR-BER", "TR-45V", "TR-HOP", "TR-90S", "TR-SLH", "TR-LUN",
+            "TR-STA", "TR-HBW",
+            "TE-45V", "TE-HBW", "TE-OLS", "TE-TLS", "TE-HOP",
+            "TR-STK1", "TR-STK2", "TR-TIL", "TR-PLY",
+        ],
+        2: [
+            "TR-BER", "TR-45V", "TR-HOP", "TR-90S", "TR-SLH", "TR-LUN",
+            "TR-STA", "TR-HBW",
+            "TE-45V", "TE-HBW", "TE-OLS", "TE-TLS", "TE-HOP",
+            "TR-STK3", "TR-STK4", "TR-TIL", "TR-PLY",
+        ],
+    },
+    "lp": {
+        1: [
+            "TR-BER", "TR-45V", "TR-90S", "TR-STA",
+            "TE-45V", "TE-HBW", "TE-OLS", "TE-TLS", "TE-HOP",
+            "TR-HOP", "TR-SLH", "TR-LUN", "TR-LBJ", "TR-HBW",
+            "TR-STK1", "TR-STK2", "TR-STK3", "TR-STK4", "TR-TIL", "TR-PLY",
+        ],
+        2: [
+            "TR-PLY", "TR-TIL", "TR-STK1", "TR-STK2", "TR-STK3", "TR-STK4",
+            "TR-HBW", "TR-LBJ", "TR-LUN", "TR-SLH", "TR-HOP",
+            "TE-HOP", "TE-TLS", "TE-OLS", "TE-HBW", "TE-45V",
+            "TR-STA", "TR-90S", "TR-45V", "TR-BER",
+        ],
+    },
+    "xl": {
+        1: [
+            "TR-BER", "TR-45V", "TR-90S", "TR-STA",
+            "TE-45V", "TE-HBW", "TE-OLS", "TE-TLS", "TE-HOP",
+            "TR-HOP", "TR-SLH", "TR-LUN", "TR-LBJ", "TR-HBW",
+            "TR-STK1", "TR-STK2", "TR-STK3", "TR-STK4", "TR-TIL", "TR-PLY",
+        ],
+        2: [
+            "TR-PLY", "TR-TIL", "TR-STK1", "TR-STK2", "TR-STK3", "TR-STK4",
+            "TR-HBW", "TR-LBJ", "TR-LUN", "TR-SLH", "TR-HOP",
+            "TE-HOP", "TE-TLS", "TE-OLS", "TE-HBW", "TE-45V",
+            "TR-STA", "TR-90S", "TR-45V", "TR-BER",
+        ],
+    },
+}
+
+
+def default_expected_for(
+    family: Optional[str], session_number: int,
+) -> List[str]:
+    """Resolve the built-in default for one (family, session_number) pair.
+    Falls back to the second-day procedure of the same family if a higher
+    session number isn't explicitly defined, and to DEFAULT_EXPECTED if
+    the family isn't known. Never raises."""
+    if family and family in DEFAULT_BY_TYPE_AND_SESSION:
+        by_session = DEFAULT_BY_TYPE_AND_SESSION[family]
+        if session_number in by_session:
+            return list(by_session[session_number])
+        # Higher session # than we have data for → reuse last known.
+        if by_session:
+            last = max(by_session.keys())
+            return list(by_session[last])
+    return list(DEFAULT_EXPECTED)
 
 
 # Filename pattern: <device>-<TR|TE>-<ACTIVITY>_<date>.csv[.gz]
@@ -86,6 +185,11 @@ def parse_activity_from_key(key: str) -> str | None:
 __all__ = [
     "ACTIVITIES",
     "DEFAULT_EXPECTED",
+    "DEFAULT_BY_TYPE_AND_SESSION",
+    "TYPE_ID_TO_FAMILY",
     "activity_description",
     "parse_activity_from_key",
+    "family_for_type_id",
+    "family_for_device_id",
+    "default_expected_for",
 ]
