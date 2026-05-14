@@ -62,8 +62,14 @@ class CalibrationBucketSession(Base):
     # Active capture seconds: sum of inter-upload deltas <=30 min.
     duration_seconds = Column(Float, nullable=False, default=0.0)
 
-    # Parsed from tests.txt. Stored denormalized + raw for queries / debug.
+    # Parsed from tests.txt. `calibrator_name` is the raw string from the
+    # file (kept for ground-truth / debugging); `calibrator_id` is the FK
+    # to the deduped Calibrator row populated by the sync. Either can be
+    # null when tests.txt has no calibrated_by field.
     calibrator_name = Column(String, nullable=True, index=True)
+    calibrator_id = Column(
+        Integer, ForeignKey("calibrators.id"), nullable=True, index=True,
+    )
     location = Column(String, nullable=True, index=True)
     tests_txt_fields = Column(JSON, nullable=True)
 
@@ -90,6 +96,9 @@ class CalibrationBucketSession(Base):
         lazy="select",
     )
     device = relationship("Device", lazy="joined")
+    calibrator = relationship(
+        "Calibrator", back_populates="bucket_sessions", lazy="select",
+    )
 
     __table_args__ = (
         UniqueConstraint("device_axf_id", "date_iso", name="uq_bucket_session_device_date"),
@@ -167,6 +176,7 @@ class CalibrationBucketSessionResponse(BaseModel):
     total_bytes: int = 0
     duration_seconds: float = 0.0
     calibrator_name: Optional[str] = None
+    calibrator_id: Optional[int] = None
     location: Optional[str] = None
     tests_txt_fields: Optional[dict] = None
     flag_complete: bool = False
