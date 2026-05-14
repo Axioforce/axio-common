@@ -52,12 +52,33 @@ class Calibrator(Base):
 
 
 def normalize_calibrator_name(raw: Optional[str]) -> Optional[str]:
-    """Return the lowercase + collapsed-whitespace form of a calibrator name,
-    or None if the input is empty/whitespace. Used for name_key lookups."""
+    """Return the canonical key for a calibrator name, or None when the input
+    is empty/whitespace. Splits on common multi-name separators and uses the
+    first non-empty entry as the key — `'Eric, Sky and Zach'` collapses to
+    `'eric'` so the legacy free-form multi-author strings don't appear as
+    fake calibrators in the rollup. Multi-attribution will move to an M2M
+    junction in a follow-up; this is the conservative first cut."""
     if not raw:
         return None
-    s = " ".join(raw.split()).lower()
-    return s or None
+    s = raw.strip()
+    if not s:
+        return None
+    # Split on common multi-name separators. ' and ' is hit before ' & ' is
+    # split out by the comma-or-ampersand pass so 'Eric & Zach and Sky'
+    # still collapses to 'Eric'.
+    for sep in (";", ","):
+        if sep in s:
+            s = s.split(sep)[0]
+    # ' and ' / ' & ' are word-boundary separators, not bare splits — guard
+    # against 'Brandon' becoming 'Br' by checking for surrounding spaces.
+    lowered = s.lower()
+    for sep in (" and ", " & "):
+        idx = lowered.find(sep)
+        if idx >= 0:
+            s = s[:idx]
+            lowered = s.lower()
+    key = " ".join(s.split()).lower()
+    return key or None
 
 
 class CalibratorResponse(BaseModel):
