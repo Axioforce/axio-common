@@ -21,6 +21,7 @@ from .live_test import (
     LiveTestSession, LiveTestCell, LiveTestAggregate,
     STAGE_TYPES, STAGE_LOCATIONS, COLOR_BINS,
 )
+from .live_test_settings import LiveTestSettings
 from .bucket_session import (
     CalibrationBucketSession, CalibrationBucketFile,
     KIND_TRAIN, KIND_TEST, KIND_OTHER,
@@ -44,6 +45,7 @@ __all__ = [
     "LoadCell", "LoadCellManufacturing", "LoadCellNote", "MoldNote",
     "CalibrationSession", "CalibrationSessionCalibrator", "CalibrationSessionDate",
     "LiveTestSession", "LiveTestCell", "LiveTestAggregate",
+    "LiveTestSettings",
     "CalibrationBucketSession", "CalibrationBucketFile",
     "Calibrator", "normalize_calibrator_name",
     "JobBucketSession", "KIND_TRAIN_LINK", "KIND_TEST_LINK", "KIND_BOTH_LINK",
