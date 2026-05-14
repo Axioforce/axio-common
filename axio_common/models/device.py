@@ -23,10 +23,12 @@ TYPE_ID_NAME_MAP = {
     "0c": "Rowing Ergometer Right",
     "0d": "Rat Pad Right",
     "0e": "Rat Pad Left",
-    "0f": "HD Prototype",
+    "0f": "Hawkin Dynamic Prototype",
     "10": "Launch Pad Lite v1.2",
     "11": "Launch Pad v1.2",
-    "12": "Launch Pad XL v1.2"
+    "12": "Launch Pad XL v1.2",
+    "13": "Robotic Skin",
+    "af": "Axiocell",
 }
 
 
