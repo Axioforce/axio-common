@@ -26,6 +26,10 @@ from .bucket_session import (
     KIND_TRAIN, KIND_TEST, KIND_OTHER,
 )
 from .calibrator import Calibrator, normalize_calibrator_name
+from .job_bucket_session import (
+    JobBucketSession,
+    KIND_TRAIN_LINK, KIND_TEST_LINK, KIND_BOTH_LINK,
+)
 
 __all__ = [
     "Client", "Device", "Job", "Run",
@@ -37,6 +41,7 @@ __all__ = [
     "LiveTestSession", "LiveTestCell", "LiveTestAggregate",
     "CalibrationBucketSession", "CalibrationBucketFile",
     "Calibrator", "normalize_calibrator_name",
+    "JobBucketSession", "KIND_TRAIN_LINK", "KIND_TEST_LINK", "KIND_BOTH_LINK",
     "CORNER_POSITIONS", "ASSEMBLED_BASELINE_KINDS", "CALIBRATION_SESSION_STATUSES",
     "STAGE_TYPES", "STAGE_LOCATIONS", "COLOR_BINS",
     "KIND_TRAIN", "KIND_TEST", "KIND_OTHER",
