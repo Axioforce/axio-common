@@ -76,6 +76,14 @@ class CalibrationBucketSession(Base):
     # Admin flags. Replaces _config/admin_state.json's session_flags.
     flag_complete = Column(Boolean, nullable=False, default=False)
     flag_soft_deleted = Column(Boolean, nullable=False, default=False)
+
+    # Operator-set outcome from the live-testing software. NULL = no decision
+    # yet (the default; appears in the dashboard as 'untested'). String values
+    # match the legacy CalibrationSession status: 'pass' | 'fail'.
+    outcome = Column(String, nullable=True, index=True)
+    # Free-form note from the live-testing software when flipping outcome
+    # (typical: failure reason or pass-with-caveats).
+    outcome_reason = Column(String, nullable=True)
     # True when an admin has set a per-(family, session_number) override.
     # Resolved at API time, not stored on this row.
     is_overridden = Column(Boolean, nullable=False, default=False)
@@ -183,6 +191,8 @@ class CalibrationBucketSessionResponse(BaseModel):
     flag_soft_deleted: bool = False
     is_overridden: bool = False
     acknowledged_missing: Optional[List[str]] = None
+    outcome: Optional[str] = None
+    outcome_reason: Optional[str] = None
 
     class Config:
         from_attributes = True
