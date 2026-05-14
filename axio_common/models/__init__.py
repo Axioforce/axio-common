@@ -30,6 +30,11 @@ from .job_bucket_session import (
     JobBucketSession,
     KIND_TRAIN_LINK, KIND_TEST_LINK, KIND_BOTH_LINK,
 )
+from .delivery import (
+    Delivery, DELIVERY_STATUSES,
+    DELIVERY_STATUS_PENDING, DELIVERY_STATUS_SHIPPED,
+    DELIVERY_STATUS_DELIVERED, DELIVERY_STATUS_RETURNED,
+)
 
 __all__ = [
     "Client", "Device", "Job", "Run",
@@ -42,6 +47,9 @@ __all__ = [
     "CalibrationBucketSession", "CalibrationBucketFile",
     "Calibrator", "normalize_calibrator_name",
     "JobBucketSession", "KIND_TRAIN_LINK", "KIND_TEST_LINK", "KIND_BOTH_LINK",
+    "Delivery", "DELIVERY_STATUSES",
+    "DELIVERY_STATUS_PENDING", "DELIVERY_STATUS_SHIPPED",
+    "DELIVERY_STATUS_DELIVERED", "DELIVERY_STATUS_RETURNED",
     "CORNER_POSITIONS", "ASSEMBLED_BASELINE_KINDS", "CALIBRATION_SESSION_STATUSES",
     "STAGE_TYPES", "STAGE_LOCATIONS", "COLOR_BINS",
     "KIND_TRAIN", "KIND_TEST", "KIND_OTHER",
