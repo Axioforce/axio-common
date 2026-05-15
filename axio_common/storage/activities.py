@@ -203,9 +203,10 @@ DEFAULT_BY_TYPE_AND_SESSION: Dict[str, Dict[int, List[str]]] = {
 
 # Activity-line shape inside a tests.txt body — `TR-XXX:` or `TE-XXX:` at
 # (optionally indented) line start. Case-insensitive in case operators
-# typed lowercase.
+# typed lowercase. The code may end with `-N` (a numeric range upper-bound
+# like `STK1-4`) — captured here and expanded by _expand_range_code below.
 _ACTIVITY_LINE_RE = re.compile(
-    r"^\s*(TR|TE)-([A-Za-z0-9]+)\s*:",
+    r"^\s*(TR|TE)-([A-Za-z0-9]+(?:-\d+)?)\s*:",
     re.MULTILINE | re.IGNORECASE,
 )
 # "Testing done in reverse order to train" / "test files in reverse order" —
@@ -213,19 +214,40 @@ _ACTIVITY_LINE_RE = re.compile(
 _REVERSE_ORDER_HINT_RE = re.compile(
     r"\breverse\s+order\b", re.IGNORECASE,
 )
+# Detect range shorthand inside a captured code: `STK1-4` → prefix=STK, lo=1,
+# hi=4. The prefix can be empty (e.g. just `1-4`); the parser still expands
+# but a sane callable should treat that as nonsense.
+_RANGE_CODE_RE = re.compile(r"^([A-Za-z]+)(\d+)-(\d+)$")
+
+
+def _expand_range_code(code: str) -> List[str]:
+    """`'STK1-4'` → `['STK1','STK2','STK3','STK4']`. Codes without a range
+    return as a single-element list. lo > hi or runaway ranges (>50 items)
+    fall through unchanged — those are almost certainly bad input rather
+    than a legitimate range."""
+    m = _RANGE_CODE_RE.match(code)
+    if not m:
+        return [code]
+    prefix, lo, hi = m.group(1), int(m.group(2)), int(m.group(3))
+    if lo > hi or hi - lo > 50:
+        return [code]
+    return [f"{prefix}{n}" for n in range(lo, hi + 1)]
 
 
 def parse_expected_activities_from_tests_txt(body: str) -> List[str]:
     """Derive the expected activity list for a session by parsing its
     tests.txt. Returns a list of joined activity ids ("TR-MDS", "TE-MDS",
-    …) in the order they appear in the file.
+    "TR-STK1", "TR-STK2", …) in the order they appear in the file.
 
-    Two file shapes are supported:
-      (a) Train and test activities both enumerated explicitly. The parser
-          returns them in document order.
-      (b) Only train activities enumerated, with a hint like "Testing done
-          in reverse order to train". The parser mirrors the train list
-          into TE-* in reversed order.
+    Recognized shapes:
+      (a) Train and test activities both enumerated explicitly
+          (`TR-BER:` / `TE-HOP:`). Returned in document order.
+      (b) Only train activities enumerated, with a hint like
+          "Testing done in reverse order to train". The parser mirrors the
+          train list into TE-* in reversed order.
+      (c) Range shorthand in the activity code: `TR-STK1-4: …` expands to
+          TR-STK1, TR-STK2, TR-STK3, TR-STK4 (in that order) where the file
+          line originally appeared.
 
     Returns [] when the body is empty or no TR-/TE- lines are present —
     callers should fall back to the family default in that case."""
@@ -236,15 +258,16 @@ def parse_expected_activities_from_tests_txt(body: str) -> List[str]:
     seen: set = set()
     for m in _ACTIVITY_LINE_RE.finditer(body):
         kind = m.group(1).upper()
-        code = m.group(2).upper()
-        joined = f"{kind}-{code}"
-        if joined in seen:
-            continue
-        seen.add(joined)
-        if kind == "TR":
-            train_codes.append(code)
-        else:
-            test_codes.append(code)
+        raw_code = m.group(2).upper()
+        for sub in _expand_range_code(raw_code):
+            joined = f"{kind}-{sub}"
+            if joined in seen:
+                continue
+            seen.add(joined)
+            if kind == "TR":
+                train_codes.append(sub)
+            else:
+                test_codes.append(sub)
     trains = [f"TR-{c}" for c in train_codes]
     tests = [f"TE-{c}" for c in test_codes]
     if not tests and train_codes and _REVERSE_ORDER_HINT_RE.search(body):
