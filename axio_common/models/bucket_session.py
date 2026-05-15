@@ -93,6 +93,15 @@ class CalibrationBucketSession(Base):
     # JSON because the list is small and queries always load the parent row.
     acknowledged_missing = Column(JSON, nullable=True)
 
+    # Per-session expected activity list parsed from tests.txt by the bucket
+    # sync (parse_expected_activities_from_tests_txt). When present this is
+    # the highest-priority source for the live-sessions tracker's expected
+    # list — overriding the per-family default — because some families (like
+    # the insole 09/0a procedure) drive their procedure from the file rather
+    # than a hardcoded map. Null when the session has no tests.txt yet, or
+    # the file didn't enumerate any activity lines.
+    expected_activities = Column(JSON, nullable=True)
+
     created_at = Column(DateTime(timezone=True), nullable=False, default=current_time)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=current_time, onupdate=current_time)
 
@@ -191,6 +200,7 @@ class CalibrationBucketSessionResponse(BaseModel):
     flag_soft_deleted: bool = False
     is_overridden: bool = False
     acknowledged_missing: Optional[List[str]] = None
+    expected_activities: Optional[List[str]] = None
     outcome: Optional[str] = None
     outcome_reason: Optional[str] = None
 

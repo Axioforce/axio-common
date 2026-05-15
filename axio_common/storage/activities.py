@@ -6,15 +6,18 @@ agree on what activities exist, what each one means, and the expected
 set per (plate_family, session_number) for a complete calibration day.
 
 Plate families are the calibration-procedure groupings:
-    "lite" — type ids 06, 10
-    "lp"   — type ids 07, 11 (Launchpad)
-    "xl"   — type ids 08, 12
+    "lite"   — type ids 06, 10
+    "lp"     — type ids 07, 11 (Launchpad)
+    "xl"     — type ids 08, 12
+    "insole" — type ids 09 (Left), 0a (Right)
 
 The expected set for a session is resolved as:
-    1. If <bucket>/_config/session_expected_activities.json has an entry for
+    1. If the session's tests.txt enumerated TR-/TE- activity codes, use
+       those (parsed at sync time, stored on CalibrationBucketSession).
+    2. If <bucket>/_config/session_expected_activities.json has an entry for
        (plate_family, session_number), use it.
-    2. Otherwise fall back to DEFAULT_BY_TYPE_AND_SESSION[plate_family][N].
-    3. As a last resort fall back to DEFAULT_EXPECTED (all activities).
+    3. Otherwise fall back to DEFAULT_BY_TYPE_AND_SESSION[plate_family][N].
+    4. As a last resort fall back to DEFAULT_EXPECTED (all activities).
 
 axio-server owns the bucket-side override; this module just owns the
 defaults and helpers.
@@ -43,6 +46,22 @@ ACTIVITIES: Dict[str, Dict[str, str]] = {
         "TIL":  "Tile under feet — hand-push, step, stand, bounce",
         "PLY":  "Plywood under feet — hand-push, step, stand, bounce (stand on plate after setup to settle)",
         "LBJ":  "LBJ — dynamic-load capture (used in LP and XL procedures)",
+        # Insole-family training activities (type ids 09, 0a). Order/spec from
+        # the Insole Calibration Procedure tests.txt; auto-mirrored to test
+        # files in reverse order ("Testing done in reverse order to train").
+        "MDS":  "Multi-directional steps",
+        "MIP":  "March in place",
+        "ADB":  "Adduction / abduction",
+        "CHR":  "Chair (sit down / stand up)",
+        "STL":  "Stanky leg + foot rotations",
+        "LAT":  "Lateral lunges",
+        "LNG":  "Forward lunges",
+        "WLK":  "Walking",
+        "SQT":  "Squats",
+        "QST":  "Quiet stand",
+        "WDL":  "Waddle steps",
+        "WGT":  "Weighted waddle steps + weighted quiet stand + weighted walking",
+        "TOE":  "Toe taps + toe balance",
     },
     "test": {
         "45V": "45 lb dumbbell vertical, 5×4 grid, snake from front-left, 30s total (lift the dumbbell, don't slide it)",
@@ -50,6 +69,21 @@ ACTIVITIES: Dict[str, Dict[str, str]] = {
         "OLS": "One-leg stand — 4 corners + center, facing 8 directions, 30s",
         "TLS": "Two-leg stand — both heels in corners + center, facing 8 directions, 30s",
         "HOP": "Hop covering full plate in 4 directions, 30s",
+        # Insole test activities mirror the train side (procedure repeats each
+        # capture in reverse order); same descriptions, just different files.
+        "MDS": "Multi-directional steps",
+        "MIP": "March in place",
+        "ADB": "Adduction / abduction",
+        "CHR": "Chair (sit down / stand up)",
+        "STL": "Stanky leg + foot rotations",
+        "LAT": "Lateral lunges",
+        "LNG": "Forward lunges",
+        "WLK": "Walking",
+        "SQT": "Squats",
+        "QST": "Quiet stand",
+        "WDL": "Waddle steps",
+        "WGT": "Weighted waddle + weighted quiet stand + weighted walking",
+        "TOE": "Toe taps + toe balance",
     },
 }
 
@@ -83,6 +117,8 @@ TYPE_ID_TO_FAMILY: Dict[str, str] = {
     "11": "lp",
     "08": "xl",
     "12": "xl",
+    "09": "insole",   # Shoe Insole Left
+    "0a": "insole",   # Shoe Insole Right
 }
 
 
@@ -147,7 +183,73 @@ DEFAULT_BY_TYPE_AND_SESSION: Dict[str, Dict[int, List[str]]] = {
             "TR-STA", "TR-90S", "TR-45V", "TR-BER",
         ],
     },
+    # Insole procedure: per the Insole Calibration Procedure tests.txt, one
+    # capture session contains all train activities followed by their test
+    # mirrors in reverse order. This is the fallback when a session's own
+    # tests.txt didn't parse — newer sessions should drive their list from
+    # their own tests.txt via parse_expected_activities_from_tests_txt().
+    "insole": {
+        1: [
+            "TR-MDS", "TR-MIP", "TR-ADB", "TR-CHR", "TR-STL", "TR-LAT",
+            "TR-LNG", "TR-WLK", "TR-SQT", "TR-QST", "TR-WDL", "TR-WGT",
+            "TR-TOE",
+            "TE-TOE", "TE-WGT", "TE-WDL", "TE-QST", "TE-SQT", "TE-WLK",
+            "TE-LNG", "TE-LAT", "TE-STL", "TE-CHR", "TE-ADB", "TE-MIP",
+            "TE-MDS",
+        ],
+    },
 }
+
+
+# Activity-line shape inside a tests.txt body — `TR-XXX:` or `TE-XXX:` at
+# (optionally indented) line start. Case-insensitive in case operators
+# typed lowercase.
+_ACTIVITY_LINE_RE = re.compile(
+    r"^\s*(TR|TE)-([A-Za-z0-9]+)\s*:",
+    re.MULTILINE | re.IGNORECASE,
+)
+# "Testing done in reverse order to train" / "test files in reverse order" —
+# loose match because operators don't always phrase it identically.
+_REVERSE_ORDER_HINT_RE = re.compile(
+    r"\breverse\s+order\b", re.IGNORECASE,
+)
+
+
+def parse_expected_activities_from_tests_txt(body: str) -> List[str]:
+    """Derive the expected activity list for a session by parsing its
+    tests.txt. Returns a list of joined activity ids ("TR-MDS", "TE-MDS",
+    …) in the order they appear in the file.
+
+    Two file shapes are supported:
+      (a) Train and test activities both enumerated explicitly. The parser
+          returns them in document order.
+      (b) Only train activities enumerated, with a hint like "Testing done
+          in reverse order to train". The parser mirrors the train list
+          into TE-* in reversed order.
+
+    Returns [] when the body is empty or no TR-/TE- lines are present —
+    callers should fall back to the family default in that case."""
+    if not body:
+        return []
+    train_codes: List[str] = []
+    test_codes: List[str] = []
+    seen: set = set()
+    for m in _ACTIVITY_LINE_RE.finditer(body):
+        kind = m.group(1).upper()
+        code = m.group(2).upper()
+        joined = f"{kind}-{code}"
+        if joined in seen:
+            continue
+        seen.add(joined)
+        if kind == "TR":
+            train_codes.append(code)
+        else:
+            test_codes.append(code)
+    trains = [f"TR-{c}" for c in train_codes]
+    tests = [f"TE-{c}" for c in test_codes]
+    if not tests and train_codes and _REVERSE_ORDER_HINT_RE.search(body):
+        tests = [f"TE-{c}" for c in reversed(train_codes)]
+    return trains + tests
 
 
 def default_expected_for(
@@ -192,6 +294,7 @@ __all__ = [
     "TYPE_ID_TO_FAMILY",
     "activity_description",
     "parse_activity_from_key",
+    "parse_expected_activities_from_tests_txt",
     "family_for_type_id",
     "family_for_device_id",
     "default_expected_for",
