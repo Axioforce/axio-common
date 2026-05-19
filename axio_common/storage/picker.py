@@ -760,4 +760,608 @@ def pick_sessions(
     return tuple(str(p) for p in sessions)
 
 
-__all__ = ["pick_session", "pick_sessions", "pick_files"]
+# ---------- pick_session_files (smart 3-pane file picker) ----------
+
+def pick_session_files(
+    parent: Optional[tk.Misc] = None,
+    *,
+    title: str = "Select files from session",
+    extensions: Optional[Sequence[str]] = None,
+) -> tuple[str, ...]:
+    """3-pane file picker: devices | sessions | files (right pane multi-select).
+
+    Pick a device with the same fast filter/search as pick_sessions, focus
+    one session in the middle pane, then multi-select individual files in
+    the right pane. Selected files are downloaded into the cache and their
+    local paths returned in selection order. Empty tuple on cancel.
+
+    For analysis flows (RunNNLiteGUI etc.) that want specific CSVs rather
+    than whole sessions. See pick_sessions when you want a session directory.
+
+    Args:
+        parent: optional Tk parent.
+        title: window title.
+        extensions: if given (case-insensitive), filter the file list to
+            entries whose local filename ends with one of these (e.g. ['.csv']).
+            Matches against the gunzipped local name, so '.csv' matches both
+            '.csv' and '.csv.gz' keys in the bucket.
+    """
+    from tkinter import messagebox
+
+    owns_root = parent is None
+    if owns_root:
+        parent = tk.Tk()
+        parent.withdraw()
+
+    top = tk.Toplevel(parent)
+    top.title(title)
+    top.geometry("1100x600+150+120")
+    top.transient(parent)
+    top.grab_set()
+
+    state: dict = {
+        "all_devices": [],
+        "type_filter": "All",
+        "search_text": "",
+        "filtered_devices": [],
+        "selected_device": None,
+        "session_listings_cache": {},  # (device_id, iso) -> SessionListing
+        "result_keys": [],             # list[str] bucket keys to download
+    }
+
+    # --- top bar: type filter + search ---
+    top_bar = ttk.Frame(top, padding=(10, 10, 10, 4))
+    top_bar.pack(fill="x")
+    ttk.Label(top_bar, text="Type:").pack(side="left")
+    type_var = tk.StringVar(value="All")
+    type_radios_frame = ttk.Frame(top_bar)
+    type_radios_frame.pack(side="left", padx=(6, 16))
+    ttk.Label(top_bar, text="Search:").pack(side="left")
+    search_var = tk.StringVar()
+    search_entry = ttk.Entry(top_bar, textvariable=search_var, width=24)
+    search_entry.pack(side="left", padx=(6, 0))
+    ttk.Label(top_bar, text="(matches '42', '10-42', '0a', etc.)",
+              foreground="#888").pack(side="left", padx=(8, 0))
+
+    # --- 3 panes ---
+    panes = ttk.PanedWindow(top, orient="horizontal")
+    panes.pack(fill="both", expand=True, padx=10, pady=(4, 4))
+
+    dev_frame = ttk.LabelFrame(panes, text="Devices")
+    dev_listbox = tk.Listbox(dev_frame, exportselection=False, activestyle="dotbox")
+    dev_scroll = ttk.Scrollbar(dev_frame, command=dev_listbox.yview)
+    dev_listbox.config(yscrollcommand=dev_scroll.set)
+    dev_listbox.pack(side="left", fill="both", expand=True, padx=(4, 0), pady=4)
+    dev_scroll.pack(side="right", fill="y", pady=4)
+    panes.add(dev_frame, weight=2)
+
+    sess_frame = ttk.LabelFrame(panes, text="Sessions")
+    sess_tree = ttk.Treeview(sess_frame, columns=("counts",),
+                             selectmode="browse", show="tree headings")
+    sess_tree.heading("#0", text="Date")
+    sess_tree.heading("counts", text="train / test")
+    sess_tree.column("#0", width=140, anchor="w")
+    sess_tree.column("counts", width=110, anchor="center")
+    sess_scroll = ttk.Scrollbar(sess_frame, command=sess_tree.yview)
+    sess_tree.config(yscrollcommand=sess_scroll.set)
+    sess_tree.pack(side="left", fill="both", expand=True, padx=(4, 0), pady=4)
+    sess_scroll.pack(side="right", fill="y", pady=4)
+    panes.add(sess_frame, weight=2)
+
+    files_frame = ttk.LabelFrame(panes, text="Files (Ctrl/Shift-click to multi-select)")
+    files_tree = ttk.Treeview(files_frame, columns=("kind",),
+                              selectmode="extended", show="tree headings")
+    files_tree.heading("#0", text="Filename")
+    files_tree.heading("kind", text="Kind")
+    files_tree.column("#0", width=240, anchor="w")
+    files_tree.column("kind", width=70, anchor="center")
+    files_scroll = ttk.Scrollbar(files_frame, command=files_tree.yview)
+    files_tree.config(yscrollcommand=files_scroll.set)
+    files_tree.pack(side="left", fill="both", expand=True, padx=(4, 0), pady=4)
+    files_scroll.pack(side="right", fill="y", pady=4)
+    panes.add(files_frame, weight=3)
+
+    # --- bottom: status + buttons ---
+    btn_frame = ttk.Frame(top, padding=(10, 4, 10, 10))
+    btn_frame.pack(fill="x")
+    status_var = tk.StringVar(value="Loading devices...")
+    ttk.Label(btn_frame, textvariable=status_var, foreground="#666").pack(side="left")
+
+    def _close():
+        if top.winfo_exists():
+            top.destroy()
+
+    cancel_btn = ttk.Button(btn_frame, text="Cancel", command=_close)
+    ok_btn = ttk.Button(btn_frame, text="OK")
+    cancel_btn.pack(side="right", padx=4)
+    ok_btn.pack(side="right", padx=4)
+
+    # --- logic ---
+
+    def _local_name(key: str) -> str:
+        name = key.rsplit("/", 1)[-1]
+        return name[:-3] if name.endswith(".csv.gz") else name
+
+    def _matches_ext(key: str) -> bool:
+        if not extensions:
+            return True
+        name = _local_name(key).lower()
+        return any(name.endswith(ext.lower()) for ext in extensions)
+
+    def refresh_devices():
+        dev_listbox.delete(0, "end")
+        tf_ = state["type_filter"]
+        q = state["search_text"]
+        filtered = []
+        for dev in state["all_devices"]:
+            if tf_ != "All" and not dev.startswith(f"{tf_}-"):
+                continue
+            if not _device_matches(dev, q):
+                continue
+            filtered.append(dev)
+        state["filtered_devices"] = filtered
+        for dev in filtered:
+            short = _short_device_id(dev)
+            label = f"{dev}    ({short})" if short != dev else dev
+            dev_listbox.insert("end", label)
+        status_var.set(
+            f"{len(filtered)} device(s) match." if filtered
+            else "No devices match. Adjust filter or search."
+        )
+
+    def on_search_change(*_):
+        state["search_text"] = search_var.get().strip()
+        refresh_devices()
+
+    def on_type_change(*_):
+        state["type_filter"] = type_var.get()
+        refresh_devices()
+
+    search_var.trace_add("write", on_search_change)
+    type_var.trace_add("write", on_type_change)
+
+    def on_device_selected(_evt=None):
+        sel = dev_listbox.curselection()
+        if not sel:
+            return
+        device_id = state["filtered_devices"][sel[0]]
+        if state["selected_device"] == device_id:
+            return
+        state["selected_device"] = device_id
+        sess_tree.delete(*sess_tree.get_children())
+        files_tree.delete(*files_tree.get_children())
+        status_var.set(f"Loading sessions for {device_id}...")
+        threading.Thread(target=_work_sessions, args=(device_id,), daemon=True).start()
+
+    dev_listbox.bind("<<ListboxSelect>>", on_device_selected)
+
+    def _work_sessions(device_id):
+        try:
+            dates = [d for d in _sc.list_dates(device_id) if d != "models"]
+            top.after(0, lambda: _populate_sessions(device_id, dates))
+        except Exception as e:
+            top.after(0, lambda: status_var.set(f"Error loading sessions: {e}"))
+
+    def _populate_sessions(device_id, dates):
+        dates_sorted = sorted(dates, reverse=True)
+        for d in dates_sorted:
+            sess_tree.insert("", "end", iid=d, text=d, values=("loading...",))
+        if dates_sorted:
+            sess_tree.selection_set(dates_sorted[0])
+            sess_tree.focus(dates_sorted[0])
+            _on_session_focus(dates_sorted[0])
+            status_var.set(f"{len(dates_sorted)} session(s) for {device_id}.")
+        else:
+            status_var.set(f"No sessions for {device_id}.")
+        threading.Thread(target=_work_session_counts,
+                         args=(device_id, dates_sorted), daemon=True).start()
+
+    def _work_session_counts(device_id, dates):
+        for d in dates:
+            try:
+                listing = _sc.list_session(device_id, d)
+                state["session_listings_cache"][(device_id, d)] = listing
+                c = f"{len(listing.train)} / {len(listing.test)}"
+                top.after(0, lambda i=d, val=c: sess_tree.set(i, "counts", val))
+            except Exception:
+                top.after(0, lambda i=d: sess_tree.set(i, "counts", "?"))
+
+    def _on_session_focus(date):
+        device_id = state["selected_device"]
+        if not device_id:
+            return
+        files_tree.delete(*files_tree.get_children())
+        cache_key = (device_id, date)
+        cached = state["session_listings_cache"].get(cache_key)
+        if cached is not None:
+            _populate_files(cached)
+            return
+        files_tree.insert("", "end", text="loading...")
+
+        def work():
+            try:
+                listing = _sc.list_session(device_id, date)
+                state["session_listings_cache"][cache_key] = listing
+                top.after(0, lambda l=listing: _populate_files(l))
+            except Exception as e:
+                msg = f"err: {e}"
+                top.after(0, lambda: (
+                    files_tree.delete(*files_tree.get_children()),
+                    files_tree.insert("", "end", text=msg),
+                ))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _populate_files(listing):
+        files_tree.delete(*files_tree.get_children())
+        for k in listing.train:
+            if _matches_ext(k):
+                files_tree.insert("", "end", iid=f"train:{k}",
+                                  text=_local_name(k), values=("train",))
+        for k in listing.test:
+            if _matches_ext(k):
+                files_tree.insert("", "end", iid=f"test:{k}",
+                                  text=_local_name(k), values=("test",))
+
+    def on_session_select(_evt):
+        focused = sess_tree.focus()
+        if focused:
+            _on_session_focus(focused)
+
+    sess_tree.bind("<<TreeviewSelect>>", on_session_select)
+
+    def on_ok():
+        sel = files_tree.selection()
+        if not sel:
+            messagebox.showwarning("No files",
+                                   "Pick one or more files.", parent=top)
+            return
+        keys = []
+        for iid in sel:
+            # iid format 'train:<key>' / 'test:<key>'
+            _, _, key = iid.partition(":")
+            keys.append(key)
+        state["result_keys"] = keys
+        _close()
+
+    ok_btn.config(command=on_ok)
+    top.protocol("WM_DELETE_WINDOW", _close)
+
+    def _work_initial():
+        try:
+            types = _sc.list_device_types()
+            all_devices = []
+            for t in types:
+                all_devices.extend(_sc.list_devices(t))
+            top.after(0, lambda: _populate_initial(types, sorted(all_devices)))
+        except Exception as e:
+            top.after(0, lambda: status_var.set(f"Error loading bucket: {e}"))
+
+    def _populate_initial(types, devices):
+        ttk.Radiobutton(type_radios_frame, text="All",
+                        variable=type_var, value="All").pack(side="left")
+        for t in types:
+            ttk.Radiobutton(type_radios_frame, text=t,
+                            variable=type_var, value=t).pack(side="left", padx=2)
+        state["all_devices"] = devices
+        refresh_devices()
+        search_entry.focus_set()
+
+    threading.Thread(target=_work_initial, daemon=True).start()
+
+    top.wait_window()
+    if owns_root:
+        try:
+            parent.destroy()
+        except tk.TclError:
+            pass
+
+    keys = state["result_keys"]
+    if not keys:
+        return ()
+
+    paths = _run_with_progress(
+        parent if not owns_root else None,
+        len(keys),
+        lambda progress: _sc.download_files(keys, progress=progress),
+    )
+    return tuple(str(p) for p in paths)
+
+
+# ---------- pick_model_file (smart 3-pane model picker) ----------
+
+def pick_model_file(
+    parent: Optional[tk.Misc] = None,
+    *,
+    title: str = "Select model",
+    extensions: Optional[Sequence[str]] = (".tflite",),
+) -> Optional[str]:
+    """3-pane model picker: devices | model-compound dirs | files (single-select).
+
+    Pick a device, pick one of its model compound directories
+    (<device>/models/<compound-name>/...), then pick one specific file from
+    the right pane — typically a .tflite. The picked file is downloaded into
+    the cache and its local path returned. None on cancel.
+
+    Args:
+        parent: optional Tk parent.
+        title: window title.
+        extensions: case-insensitive suffix allowlist for the file pane.
+            Default ('.tflite',). Pass None to show every file in the compound.
+    """
+    from tkinter import messagebox
+
+    owns_root = parent is None
+    if owns_root:
+        parent = tk.Tk()
+        parent.withdraw()
+
+    top = tk.Toplevel(parent)
+    top.title(title)
+    top.geometry("1100x600+150+120")
+    top.transient(parent)
+    top.grab_set()
+
+    state: dict = {
+        "all_devices": [],
+        "type_filter": "All",
+        "search_text": "",
+        "filtered_devices": [],
+        "selected_device": None,
+        "selected_compound": None,
+        "result_key": None,
+    }
+
+    # --- top bar ---
+    top_bar = ttk.Frame(top, padding=(10, 10, 10, 4))
+    top_bar.pack(fill="x")
+    ttk.Label(top_bar, text="Type:").pack(side="left")
+    type_var = tk.StringVar(value="All")
+    type_radios_frame = ttk.Frame(top_bar)
+    type_radios_frame.pack(side="left", padx=(6, 16))
+    ttk.Label(top_bar, text="Search:").pack(side="left")
+    search_var = tk.StringVar()
+    search_entry = ttk.Entry(top_bar, textvariable=search_var, width=24)
+    search_entry.pack(side="left", padx=(6, 0))
+    ttk.Label(top_bar, text="(matches '42', '10-42', '0a', etc.)",
+              foreground="#888").pack(side="left", padx=(8, 0))
+
+    # --- 3 panes ---
+    panes = ttk.PanedWindow(top, orient="horizontal")
+    panes.pack(fill="both", expand=True, padx=10, pady=(4, 4))
+
+    dev_frame = ttk.LabelFrame(panes, text="Devices")
+    dev_listbox = tk.Listbox(dev_frame, exportselection=False, activestyle="dotbox")
+    dev_scroll = ttk.Scrollbar(dev_frame, command=dev_listbox.yview)
+    dev_listbox.config(yscrollcommand=dev_scroll.set)
+    dev_listbox.pack(side="left", fill="both", expand=True, padx=(4, 0), pady=4)
+    dev_scroll.pack(side="right", fill="y", pady=4)
+    panes.add(dev_frame, weight=2)
+
+    comp_frame = ttk.LabelFrame(panes, text="Model dirs (newest first)")
+    comp_listbox = tk.Listbox(comp_frame, exportselection=False,
+                              activestyle="dotbox", selectmode="browse")
+    comp_scroll = ttk.Scrollbar(comp_frame, command=comp_listbox.yview)
+    comp_listbox.config(yscrollcommand=comp_scroll.set)
+    comp_listbox.pack(side="left", fill="both", expand=True, padx=(4, 0), pady=4)
+    comp_scroll.pack(side="right", fill="y", pady=4)
+    panes.add(comp_frame, weight=2)
+
+    files_frame = ttk.LabelFrame(panes, text="Files in selected model dir")
+    files_tree = ttk.Treeview(files_frame, columns=("size",),
+                              selectmode="browse", show="tree headings")
+    files_tree.heading("#0", text="Path")
+    files_tree.heading("size", text="Size")
+    files_tree.column("#0", width=320, anchor="w")
+    files_tree.column("size", width=80, anchor="e")
+    files_scroll = ttk.Scrollbar(files_frame, command=files_tree.yview)
+    files_tree.config(yscrollcommand=files_scroll.set)
+    files_tree.pack(side="left", fill="both", expand=True, padx=(4, 0), pady=4)
+    files_scroll.pack(side="right", fill="y", pady=4)
+    panes.add(files_frame, weight=3)
+
+    # --- bottom ---
+    btn_frame = ttk.Frame(top, padding=(10, 4, 10, 10))
+    btn_frame.pack(fill="x")
+    status_var = tk.StringVar(value="Loading devices...")
+    ttk.Label(btn_frame, textvariable=status_var, foreground="#666").pack(side="left")
+
+    def _close():
+        if top.winfo_exists():
+            top.destroy()
+
+    cancel_btn = ttk.Button(btn_frame, text="Cancel", command=_close)
+    ok_btn = ttk.Button(btn_frame, text="OK")
+    cancel_btn.pack(side="right", padx=4)
+    ok_btn.pack(side="right", padx=4)
+
+    # --- logic ---
+
+    def _matches_ext(name: str) -> bool:
+        if not extensions:
+            return True
+        ln = name.lower()
+        return any(ln.endswith(ext.lower()) for ext in extensions)
+
+    def _fmt_size(n: int) -> str:
+        for unit in ("B", "KB", "MB", "GB"):
+            if n < 1024:
+                return f"{n:.0f} {unit}"
+            n /= 1024
+        return f"{n:.1f} TB"
+
+    def refresh_devices():
+        dev_listbox.delete(0, "end")
+        tf_ = state["type_filter"]
+        q = state["search_text"]
+        filtered = []
+        for dev in state["all_devices"]:
+            if tf_ != "All" and not dev.startswith(f"{tf_}-"):
+                continue
+            if not _device_matches(dev, q):
+                continue
+            filtered.append(dev)
+        state["filtered_devices"] = filtered
+        for dev in filtered:
+            short = _short_device_id(dev)
+            label = f"{dev}    ({short})" if short != dev else dev
+            dev_listbox.insert("end", label)
+        status_var.set(
+            f"{len(filtered)} device(s) match." if filtered
+            else "No devices match. Adjust filter or search."
+        )
+
+    def on_search_change(*_):
+        state["search_text"] = search_var.get().strip()
+        refresh_devices()
+
+    def on_type_change(*_):
+        state["type_filter"] = type_var.get()
+        refresh_devices()
+
+    search_var.trace_add("write", on_search_change)
+    type_var.trace_add("write", on_type_change)
+
+    def on_device_selected(_evt=None):
+        sel = dev_listbox.curselection()
+        if not sel:
+            return
+        device_id = state["filtered_devices"][sel[0]]
+        if state["selected_device"] == device_id:
+            return
+        state["selected_device"] = device_id
+        state["selected_compound"] = None
+        comp_listbox.delete(0, "end")
+        files_tree.delete(*files_tree.get_children())
+        status_var.set(f"Loading model dirs for {device_id}...")
+        threading.Thread(target=_work_compounds, args=(device_id,), daemon=True).start()
+
+    dev_listbox.bind("<<ListboxSelect>>", on_device_selected)
+
+    def _work_compounds(device_id):
+        try:
+            compounds = _sc.list_models(device_id)
+            top.after(0, lambda: _populate_compounds(device_id, compounds))
+        except Exception as e:
+            top.after(0, lambda: status_var.set(f"Error loading model dirs: {e}"))
+
+    def _populate_compounds(device_id, compounds):
+        # Show newest first — compound names start with month so reverse
+        # sort gives a reasonable proxy. Real metadata sort is on the
+        # deferred plan.
+        comps_sorted = sorted(compounds, reverse=True)
+        state["compounds_sorted"] = comps_sorted
+        for c in comps_sorted:
+            comp_listbox.insert("end", c)
+        if comps_sorted:
+            comp_listbox.selection_set(0)
+            comp_listbox.activate(0)
+            _on_compound_selected()
+            status_var.set(f"{len(comps_sorted)} model dir(s) for {device_id}.")
+        else:
+            status_var.set(f"No model dirs for {device_id}.")
+
+    def _on_compound_selected(_evt=None):
+        sel = comp_listbox.curselection()
+        if not sel:
+            return
+        compound = state["compounds_sorted"][sel[0]]
+        if state["selected_compound"] == compound:
+            return
+        state["selected_compound"] = compound
+        files_tree.delete(*files_tree.get_children())
+        files_tree.insert("", "end", text="loading...")
+        threading.Thread(target=_work_files,
+                         args=(state["selected_device"], compound),
+                         daemon=True).start()
+
+    comp_listbox.bind("<<ListboxSelect>>", _on_compound_selected)
+
+    def _work_files(device_id, compound):
+        try:
+            prefix = f"{_sc.models_prefix(device_id)}{compound}/"
+            entries = []
+            paginator = _sc._client_singleton().get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=_sc._bucket(), Prefix=prefix):
+                for obj in page.get("Contents", []) or []:
+                    key = obj["Key"]
+                    rel = key.removeprefix(prefix)
+                    entries.append((rel, key, obj["Size"]))
+            entries.sort()
+            top.after(0, lambda: _populate_files(entries))
+        except Exception as e:
+            msg = f"err: {e}"
+            top.after(0, lambda: (
+                files_tree.delete(*files_tree.get_children()),
+                files_tree.insert("", "end", text=msg),
+            ))
+
+    def _populate_files(entries):
+        files_tree.delete(*files_tree.get_children())
+        for rel, key, size in entries:
+            name = rel.rsplit("/", 1)[-1]
+            if not _matches_ext(name):
+                continue
+            files_tree.insert("", "end", iid=key, text=rel,
+                              values=(_fmt_size(size),))
+
+    def on_ok():
+        sel = files_tree.selection()
+        if not sel:
+            messagebox.showwarning("No file",
+                                   "Pick a model file.", parent=top)
+            return
+        state["result_key"] = sel[0]  # iid IS the key
+        _close()
+
+    ok_btn.config(command=on_ok)
+    top.protocol("WM_DELETE_WINDOW", _close)
+
+    def _work_initial():
+        try:
+            types = _sc.list_device_types()
+            all_devices = []
+            for t in types:
+                all_devices.extend(_sc.list_devices(t))
+            top.after(0, lambda: _populate_initial(types, sorted(all_devices)))
+        except Exception as e:
+            top.after(0, lambda: status_var.set(f"Error loading bucket: {e}"))
+
+    def _populate_initial(types, devices):
+        ttk.Radiobutton(type_radios_frame, text="All",
+                        variable=type_var, value="All").pack(side="left")
+        for t in types:
+            ttk.Radiobutton(type_radios_frame, text=t,
+                            variable=type_var, value=t).pack(side="left", padx=2)
+        state["all_devices"] = devices
+        refresh_devices()
+        search_entry.focus_set()
+
+    threading.Thread(target=_work_initial, daemon=True).start()
+
+    top.wait_window()
+    if owns_root:
+        try:
+            parent.destroy()
+        except tk.TclError:
+            pass
+
+    key = state["result_key"]
+    if not key:
+        return None
+
+    paths = _run_with_progress(
+        parent if not owns_root else None,
+        1,
+        lambda progress: _sc.download_files([key], progress=progress),
+    )
+    return str(paths[0]) if paths else None
+
+
+__all__ = [
+    "pick_session",
+    "pick_sessions",
+    "pick_files",
+    "pick_session_files",
+    "pick_model_file",
+]
