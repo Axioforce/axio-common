@@ -767,6 +767,7 @@ def pick_session_files(
     *,
     title: str = "Select files from session",
     extensions: Optional[Sequence[str]] = None,
+    initial_device: Optional[str] = None,
 ) -> tuple[str, ...]:
     """3-pane file picker: devices | sessions | files (right pane multi-select).
 
@@ -1046,6 +1047,16 @@ def pick_session_files(
         state["all_devices"] = devices
         refresh_devices()
         search_entry.focus_set()
+        # Pre-select an initial device when the caller passed one (e.g.
+        # RunNNLiteGUI passing the device used in the previous Tigris pick
+        # so the user doesn't have to scroll to it again). Silently ignored
+        # if the device isn't in the bucket / current filter.
+        if initial_device and initial_device in state["filtered_devices"]:
+            idx = state["filtered_devices"].index(initial_device)
+            dev_listbox.selection_set(idx)
+            dev_listbox.activate(idx)
+            dev_listbox.see(idx)
+            on_device_selected()
 
     threading.Thread(target=_work_initial, daemon=True).start()
 
@@ -1075,6 +1086,7 @@ def pick_model_file(
     *,
     title: str = "Select model",
     extensions: Optional[Sequence[str]] = (".tflite",),
+    initial_device: Optional[str] = None,
 ) -> Optional[str]:
     """3-pane model picker: devices | model-compound dirs | files (single-select).
 
@@ -1336,6 +1348,16 @@ def pick_model_file(
         state["all_devices"] = devices
         refresh_devices()
         search_entry.focus_set()
+        # Pre-select an initial device when the caller passed one (e.g.
+        # RunNNLiteGUI passing the device used in the previous Tigris pick
+        # so the user doesn't have to scroll to it again). Silently ignored
+        # if the device isn't in the bucket / current filter.
+        if initial_device and initial_device in state["filtered_devices"]:
+            idx = state["filtered_devices"].index(initial_device)
+            dev_listbox.selection_set(idx)
+            dev_listbox.activate(idx)
+            dev_listbox.see(idx)
+            on_device_selected()
 
     threading.Thread(target=_work_initial, daemon=True).start()
 
