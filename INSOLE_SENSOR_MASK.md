@@ -308,6 +308,37 @@ different fallback.
   `parse_filename_suffix` do it). Don't string-split on `.` — files like
   `model.v2.h5` would break.
 
+## Quick mask lookup CLI
+
+When you've got a hex code in front of you (e.g. off a renamed file or a
+model filename) and just want to know which sensors it represents,
+`axio_common.insole_sensor_mask` is runnable as a module:
+
+```
+$ python -m axio_common.insole_sensor_mask 7ffd
+Mask:            0x7ffd  (binary 111111111111101)
+Sensors present: 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15  [14/15]
+Sensors missing: 2  [1/15]
+IMU:             unspecified (add an _ag / _a / _g tail to specify)
+```
+
+Pass a full suffix to also resolve the IMU state and get the canonical
+form back:
+
+```
+$ python -m axio_common.insole_sensor_mask m7ffd_ag
+Mask:            0x7ffd  (binary 111111111111101)
+Sensors present: 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15  [14/15]
+Sensors missing: 2  [1/15]
+Accelerometer:   on
+Gyroscope:       on
+Feature count:   48  (14 sensors x 3 + 3 accel + 3 gyro)
+Canonical suffix: _m7ffd_ag
+```
+
+Accepted input forms: `7ffd`, `0x7ffd`, `m7ffd`, `m7ffd_ag`, `_m7ffd_a`.
+Run with no argument to drop into an interactive prompt.
+
 ## Smoke test
 
 ```python

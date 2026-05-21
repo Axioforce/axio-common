@@ -297,3 +297,138 @@ __all__ = [
     "sensors_to_mask",
     "stamp_filename",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Command-line interface
+# ---------------------------------------------------------------------------
+#
+# Run as `python -m axio_common.insole_sensor_mask <mask>` to decode any of:
+#     7ffd          # bare hex mask
+#     0x7ffd        # hex with 0x prefix
+#     m7ffd         # mask with the `m` marker
+#     m7ffd_ag      # mask + IMU tail
+#     _m7ffd_a      # full filename suffix
+# Omit the argument to drop into an interactive prompt.
+
+_CLI_INPUT_RE = re.compile(
+    r"^(?P<hex>[0-9a-f]{1,4})(?:_(?P<imu>a|g|ag))?$"
+)
+
+
+def _parse_cli_input(raw: str) -> Tuple[int, Optional[bool], Optional[bool]]:
+    """Parse a free-form mask string a human might type or paste.
+
+    Returns ``(mask, include_accel, include_gyro)`` where the IMU flags
+    are ``None`` if the input doesn't specify them (e.g. a bare ``7ffd``
+    leaves the IMU question open).
+
+    >>> _parse_cli_input("7ffd")
+    (32765, None, None)
+    >>> _parse_cli_input("0x0007")
+    (7, None, None)
+    >>> _parse_cli_input("m7ffd_ag")
+    (32765, True, True)
+    >>> _parse_cli_input("_m000f_g")
+    (15, False, True)
+    """
+    cleaned = raw.strip().lower()
+    cleaned = cleaned.lstrip("_")
+    if cleaned.startswith("m"):
+        cleaned = cleaned[1:]
+    if cleaned.startswith("0x"):
+        cleaned = cleaned[2:]
+    match = _CLI_INPUT_RE.match(cleaned)
+    if not match:
+        raise ValueError(
+            f"not a valid mask: {raw!r}. "
+            "Try a hex like 7ffd, m7ffd_ag, or 0x0007."
+        )
+    mask = int(match.group("hex"), 16)
+    if mask > ALL_SENSORS_MASK:
+        raise ValueError(
+            f"mask 0x{mask:x} exceeds the 15-sensor maximum 0x{ALL_SENSORS_MASK:x}"
+        )
+    imu = match.group("imu")
+    if imu is None:
+        return mask, None, None
+    return mask, "a" in imu, "g" in imu
+
+
+def _print_decoded(
+    mask: int, include_accel: Optional[bool], include_gyro: Optional[bool],
+) -> None:
+    """Pretty-print a parsed mask to stdout. Format chosen to be skimmable
+    in a terminal — mask line, then a sensors-present row, then
+    sensors-missing row, then IMU state."""
+    sensors = mask_to_sensors(mask)
+    missing = [i for i in range(1, PRESSURE_BITS + 1) if i not in sensors]
+    binary = format(mask, f"0{PRESSURE_BITS}b")
+
+    print(f"Mask:            0x{mask:04x}  (binary {binary})")
+    print(
+        f"Sensors present: "
+        f"{', '.join(str(s) for s in sensors) if sensors else '(none)'}  "
+        f"[{len(sensors)}/{PRESSURE_BITS}]"
+    )
+    if missing:
+        print(
+            f"Sensors missing: "
+            f"{', '.join(str(m) for m in missing)}  "
+            f"[{len(missing)}/{PRESSURE_BITS}]"
+        )
+
+    if include_accel is None and include_gyro is None:
+        print("IMU:             unspecified (add an _ag / _a / _g tail to specify)")
+    else:
+        print(f"Accelerometer:   {'on' if include_accel else 'off'}")
+        print(f"Gyroscope:       {'on' if include_gyro else 'off'}")
+        feats = InsoleFeatures(
+            sensors=tuple(sensors),
+            include_accel=bool(include_accel),
+            include_gyro=bool(include_gyro),
+        )
+        print(
+            f"Feature count:   {feats.feature_count}  "
+            f"({len(sensors)} sensors x 3"
+            f"{' + 3 accel' if include_accel else ''}"
+            f"{' + 3 gyro' if include_gyro else ''})"
+        )
+        print(
+            f"Canonical suffix: {encode_filename_suffix(list(sensors), include_accel=bool(include_accel), include_gyro=bool(include_gyro))}"
+        )
+
+
+def _cli_main(argv: Optional[list] = None) -> int:
+    """Entry point for `python -m axio_common.insole_sensor_mask`."""
+    import sys
+    args = list(argv if argv is not None else sys.argv[1:])
+    if args and args[0] in ("-h", "--help"):
+        print(
+            "Usage: python -m axio_common.insole_sensor_mask [MASK]\n\n"
+            "Decode an insole sensor-mask hex code into the set of present\n"
+            "sensors and IMU state. MASK can be a bare hex (7ffd), a hex with\n"
+            "the `m` marker (m7ffd), or a full filename suffix (m7ffd_ag).\n"
+            "If MASK is omitted, the script reads from an interactive prompt.\n\n"
+            "See axio-common/INSOLE_SENSOR_MASK.md for the format spec."
+        )
+        return 0
+    if args:
+        raw = args[0]
+    else:
+        try:
+            raw = input("Mask (e.g. 7ffd, m7ffd_ag, 0x0007): ").strip()
+        except EOFError:
+            return 1
+    try:
+        mask, accel, gyro = _parse_cli_input(raw)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    _print_decoded(mask, accel, gyro)
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(_cli_main())
