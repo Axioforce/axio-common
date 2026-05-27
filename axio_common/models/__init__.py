@@ -36,6 +36,10 @@ from .delivery import (
     DELIVERY_STATUS_PENDING, DELIVERY_STATUS_SHIPPED,
     DELIVERY_STATUS_DELIVERED, DELIVERY_STATUS_RETURNED,
 )
+from .calibration_procedure import (
+    CalibrationActivity, CalibrationFamilyActivity,
+    CalibrationFamilyDay, CalibrationActivityDayOverride,
+)
 
 __all__ = [
     "Client", "Device", "Job", "Run",
@@ -56,4 +60,6 @@ __all__ = [
     "STAGE_TYPES", "STAGE_LOCATIONS", "COLOR_BINS",
     "KIND_TRAIN", "KIND_TEST", "KIND_OTHER",
     "parse_load_cell_id",
+    "CalibrationActivity", "CalibrationFamilyActivity",
+    "CalibrationFamilyDay", "CalibrationActivityDayOverride",
 ]
