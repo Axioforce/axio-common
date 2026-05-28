@@ -129,3 +129,24 @@ def validate_family_put(payload: dict, known_activity_ids) -> List[str]:
                     f"Activity {aid!r} references undeclared day {dn!r}"
                 )
     return errors
+
+
+def snapshot_for_session(
+    *,
+    family_activities,   # list[tuple[activity_id, order_index]] in master order
+    day_members_by_day,  # dict[int, set[str]]
+    days,                # dict[int, dict] with key 'reverse_order'
+    day_number,
+):
+    """Resolve a (family, day) into the ordered activity_id list to snapshot
+    on a session row at create time. Members are taken from the day's
+    membership set, projected onto master-list order, then reversed if the
+    day's reverse_order flag is set. Returns [] when the day isn't defined."""
+    day = days.get(day_number)
+    if day is None:
+        return []
+    members = day_members_by_day.get(day_number, set())
+    ordered = [aid for aid, _ in family_activities if aid in members]
+    if day.get("reverse_order"):
+        ordered = list(reversed(ordered))
+    return ordered
