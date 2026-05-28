@@ -72,6 +72,7 @@ class CalibrationBucketSession(Base):
     )
     location = Column(String, nullable=True, index=True)
     tests_txt_fields = Column(JSON, nullable=True)
+    day_number = Column(Integer, nullable=True, index=True)
 
     # Admin flags. Replaces _config/admin_state.json's session_flags.
     flag_complete = Column(Boolean, nullable=False, default=False)
