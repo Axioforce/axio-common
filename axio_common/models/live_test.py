@@ -57,6 +57,16 @@ class LiveTestSession(Base):
     # saves successfully.
     raw_object_key = Column(String, nullable=True)
 
+    # Lineage for sessions created by FluxLite's reprocess flow: id of the
+    # original session whose raw data was re-scored, plus when the reprocess
+    # ran. Both null on directly-captured sessions.
+    reprocessed_from_session_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey('live_test_sessions.id', ondelete='SET NULL'),
+        nullable=True, index=True,
+    )
+    reprocessed_at = Column(DateTime(timezone=True), nullable=True)
+
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     cells = relationship(
