@@ -72,6 +72,9 @@ class CalibrationBucketSession(Base):
     )
     location = Column(String, nullable=True, index=True)
     tests_txt_fields = Column(JSON, nullable=True)
+    # 1-based calibration day within the session's family procedure. NULL for
+    # legacy rows (pre-redesign) and for insole/non-force-plate sessions whose
+    # procedure isn't day-numbered. Set by the DAQ via POST /start.
     day_number = Column(Integer, nullable=True, index=True)
 
     # Admin flags. Replaces _config/admin_state.json's session_flags.
@@ -197,6 +200,7 @@ class CalibrationBucketSessionResponse(BaseModel):
     calibrator_id: Optional[int] = None
     location: Optional[str] = None
     tests_txt_fields: Optional[dict] = None
+    day_number: Optional[int] = None
     flag_complete: bool = False
     flag_soft_deleted: bool = False
     is_overridden: bool = False
