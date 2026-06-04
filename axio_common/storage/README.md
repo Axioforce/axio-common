@@ -9,9 +9,13 @@ shared backing store.
 
 ## Where
 
-| Env var | Default |
-|---|---|
-| `AXIO_CALIBRATION_CACHE` | `~/.axio-cache` |
+| Env var | Default | Purpose |
+|---|---|---|
+| `AXIO_CALIBRATION_CACHE` | `~/.axio-cache` | cache root |
+| `AXIO_CALIBRATION_CACHE_MAX_GB` | `50` | GC hard cap |
+| `AXIO_CALIBRATION_CACHE_MAX_AGE_DAYS` | `28` | GC TTL |
+| `AXIO_CALIBRATION_CACHE_GC_INTERVAL_HOURS` | `12` | GC throttle window |
+| `AXIO_CALIBRATION_CACHE_GC` | `1` | GC master switch (`0`/`false`/`off` disables) |
 
 Shared across processes on the same machine. Captured by `storage_core` at
 import time — set it before importing `axio_common.storage` if you need to
@@ -120,9 +124,13 @@ legacy artifacts.)
 - **Not authoritative.** The bucket wins on conflict. If `ensure_local`
   finds a stale local copy, today it returns the stale copy — there is no
   ETag check yet (see _Open items_).
-- **Not garbage-collected.** Grows monotonically; clean manually with
-  `rm -rf $AXIO_CALIBRATION_CACHE` or by deleting individual session dirs.
-  LRU eviction by total bytes is on the roadmap.
+- **Garbage-collected (`cache_gc.py`).** `ensure_local`/`upload_file` trigger a
+  throttled, background sweep: evict whole sessions/model-dirs past the TTL
+  (`MAX_AGE_DAYS`), then oldest-first until under `MAX_GB`. **Only files
+  confirmed present in the bucket are ever deleted** — un-uploaded staging files
+  are reported and left in place. Recency is keyed off mtime (NTFS atime is off
+  by default on Windows). The module is mirrored byte-for-byte into
+  `AxioforceDynamoPy/app/storage/cache_gc.py` — keep both copies identical.
 - **Not a sync target.** It is populated lazily, per-key, on read. There is
   no `sync_all()` and no background refresh.
 
@@ -130,7 +138,7 @@ legacy artifacts.)
 
 - `local_session_dir(device_id, iso_date)` helper so the DAQ and helper
   scripts can resolve the cache path without poking at private functions.
-- LRU eviction by total bytes (env var: `AXIO_CALIBRATION_CACHE_MAX_GB`?).
+- ~~LRU eviction by total bytes~~ — done, see `cache_gc.py`.
 - ETag-aware staleness check in `ensure_local` for cases where the bucket
   copy is updated after the local copy was written.
 - File picker widget (Tk) for helper scripts that today use
