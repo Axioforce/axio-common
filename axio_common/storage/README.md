@@ -126,11 +126,20 @@ legacy artifacts.)
   ETag check yet (see _Open items_).
 - **Garbage-collected (`cache_gc.py`).** `ensure_local`/`upload_file` trigger a
   throttled, background sweep: evict whole sessions/model-dirs past the TTL
-  (`MAX_AGE_DAYS`), then oldest-first until under `MAX_GB`. **Only files
-  confirmed present in the bucket are ever deleted** — un-uploaded staging files
-  are reported and left in place. Recency is keyed off mtime (NTFS atime is off
-  by default on Windows). The module is mirrored byte-for-byte into
-  `AxioforceDynamoPy/app/storage/cache_gc.py` — keep both copies identical.
+  (`MAX_AGE_DAYS`), then oldest-first until under `MAX_GB`. **A file is deletable
+  only if it carries a fresh *verification sidecar*** — a hidden marker written
+  the instant a confirmed upload/download completes. An un-uploaded capture, or a
+  re-capture that overwrote the file after its last upload, has no fresh sidecar
+  and is never touched (it's reported as un-verified and left in place). This is
+  a local, content-honest proof — stronger than "a key with this name exists in
+  the bucket", which collides on the deterministic capture filenames. Recency is
+  keyed off mtime (NTFS atime is off by default on Windows); cache-hit reads call
+  `mark_used` to re-stamp file + sidecar so an actively-used session stays
+  protected. Caveats: a cache populated before this shipped is GC-inert until its
+  files are next accessed (safe — under-evicts), and server-side bucket deletion
+  is not detected (the calibration bucket is treated as append-only). The module
+  is mirrored byte-for-byte into `AxioforceDynamoPy/app/storage/cache_gc.py` —
+  keep both copies identical.
 - **Not a sync target.** It is populated lazily, per-key, on read. There is
   no `sync_all()` and no background refresh.
 

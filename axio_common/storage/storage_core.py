@@ -55,8 +55,11 @@ Eviction: handled by cache_gc.py. ensure_local() and upload_file() trigger a
 throttled, background GC sweep that evicts whole sessions/model-dirs older than
 AXIO_CALIBRATION_CACHE_MAX_AGE_DAYS (default 28) and, if still over
 AXIO_CALIBRATION_CACHE_MAX_GB (default 50), oldest-first until under the cap.
-GC only ever deletes files confirmed present in the bucket — un-uploaded
-staging files are never touched. See cache_gc.py for the policy.
+A file is eligible for eviction only if it carries a verification sidecar —
+written here the moment a confirmed upload or download completes — that is at
+least as new as the file. An un-uploaded capture (or a re-capture that rewrote
+the file after its last upload) has no fresh sidecar and is never touched. See
+cache_gc.py for the policy.
 
 NOTE: requires boto3. Add it to axio-common's pyproject.toml dependencies before shipping.
 """
@@ -186,59 +189,12 @@ from . import cache_gc as _cache_gc
 _gc_logger = _logging.getLogger(__name__)
 
 
-def _gc_bucket_index(keys):
-    """For cache_gc: return the subset of `keys` present in the bucket.
-
-    S3 mode lists each device prefix once and intersects (a few LISTs). Server
-    mode probes /storage/object-exists per key in parallel (no bucket secret
-    needed on daemon machines). On any listing failure the affected keys are
-    simply left unconfirmed — GC then treats them as pending and won't evict."""
-    keys = list(keys)
-    if not keys:
-        return set()
-    if _use_server_backend():
-        from concurrent.futures import ThreadPoolExecutor
-        from urllib.parse import quote
-
-        def _exists(k):
-            try:
-                if _server_get_json(
-                    f"/storage/object-exists?key={quote(k, safe='')}"
-                ).get("exists"):
-                    return k
-            except Exception:
-                return None
-            return None
-
-        present: set[str] = set()
-        with ThreadPoolExecutor(max_workers=16) as ex:
-            for r in ex.map(_exists, keys):
-                if r:
-                    present.add(r)
-        return present
-
-    wanted = set(keys)
-    prefixes = set()
-    for k in keys:
-        segs = k.split("/")
-        if len(segs) >= 2:
-            prefixes.add(f"{segs[0]}/{segs[1]}/")
-    present = set()
-    for p in prefixes:
-        try:
-            for kk in list_prefix(p, recursive=True):
-                if kk in wanted:
-                    present.add(kk)
-        except Exception:
-            continue
-    return present
-
-
 def _maybe_run_cache_gc() -> None:
     """Throttled, fire-and-forget GC trigger for the Tigris hot path. Reads a
     stamp file and returns immediately unless a sweep is due; the sweep itself
-    runs in a background daemon thread. Never raises."""
-    _cache_gc.maybe_run_gc(DEFAULT_CACHE_ROOT, _gc_bucket_index, logger=_gc_logger.info)
+    runs in a background daemon thread. Local-only (no bucket calls). Never
+    raises."""
+    _cache_gc.maybe_run_gc(DEFAULT_CACHE_ROOT, logger=_gc_logger.info)
 
 
 # ---------- key construction ----------
@@ -478,8 +434,12 @@ def ensure_local(key: str, cache_root: Path | None = None) -> Path:
     bytes from Tigris through it (no proxy load on axio-server itself).
     """
     _maybe_run_cache_gc()
+    _eff_root = cache_root if cache_root is not None else DEFAULT_CACHE_ROOT
     local = cache_path_for_key(key, cache_root)
     if local.exists():
+        # Cache hit: re-stamp so recency tracks real use (GC's in-flight floor),
+        # and keep the verification sidecar in step.
+        _cache_gc.mark_used(local, _eff_root)
         return local
     local.parent.mkdir(parents=True, exist_ok=True)
     tmp = local.with_suffix(local.suffix + ".part")
@@ -500,6 +460,7 @@ def ensure_local(key: str, cache_root: Path | None = None) -> Path:
             with urllib.request.urlopen(url, timeout=300) as resp, open(tmp, "wb") as dst:
                 shutil.copyfileobj(resp, dst, length=1024 * 1024)
         tmp.replace(local)
+        _cache_gc.record_verified(local, _eff_root)  # downloaded => confirmed in bucket
         return local
 
     s3 = _client_singleton()
@@ -510,6 +471,7 @@ def ensure_local(key: str, cache_root: Path | None = None) -> Path:
     else:
         s3.download_file(_bucket(), key, str(tmp))
     tmp.replace(local)
+    _cache_gc.record_verified(local, _eff_root)  # downloaded => confirmed in bucket
     return local
 
 
@@ -653,6 +615,7 @@ def upload_file(
         # bubbles up to the caller.
         with urllib.request.urlopen(put_req, timeout=300) as resp:
             resp.read()  # drain
+        _cache_gc.record_verified(local, DEFAULT_CACHE_ROOT)  # uploaded => confirmed in bucket
         return key
 
     s3 = _client_singleton()
@@ -663,6 +626,7 @@ def upload_file(
         )
     else:
         s3.upload_file(str(local), _bucket(), key)
+    _cache_gc.record_verified(local, DEFAULT_CACHE_ROOT)  # uploaded => confirmed in bucket
     return key
 
 

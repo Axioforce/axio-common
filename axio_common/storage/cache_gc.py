@@ -5,9 +5,7 @@ CANONICAL SOURCE: FlyNNServer/axio-common/axio_common/storage/cache_gc.py
 This module is MIRRORED byte-for-byte into:
     AxioforceStack/AxioforceDynamoPy/app/storage/cache_gc.py
 Keep the two copies identical. Everything here is backend-agnostic and
-stdlib-only; the only host-specific piece is the `bucket_index` callback each
-host injects (see each repo's storage adapter). If you change this file, change
-both copies in the same PR.
+stdlib-only. If you change this file, change both copies in the same PR.
 
 Why this exists
 ---------------
@@ -16,32 +14,63 @@ upload staging area for the DAQ. A freshly captured CSV lives ONLY in the cache
 until it has been uploaded to Tigris. Deleting such a file would lose
 calibration data permanently. Therefore the single inviolable rule is:
 
-    NEVER delete a file whose bucket key is not confirmed present.
+    NEVER delete a file unless we have positive local proof that its exact
+    current content is safely in the bucket.
 
-Anything in the cache that is not in the bucket is treated as un-uploaded and is
-left untouched (and reported), so the upload-retry paths can deal with it. GC
-only ever reclaims space that is provably re-downloadable.
+Verification sidecars
+---------------------
+That proof is a per-file *verification sidecar*: a hidden marker written next to
+a file the moment a confirmed upload OR download of it completes (see
+record_verified, called from the storage adapters). A file is "verified" iff its
+sidecar exists and is at least as new as the file itself.
+
+This is a local-only, content-honest encoding of the invariant — strictly
+stronger than "a key with this name exists in the bucket", which is a false
+proxy: capture filenames are deterministic (`<device>-<kind>-<activity>_<date>`),
+so a *re-capture* reuses the same bucket key as its predecessor. A key-presence
+check would see the old upload and wrongly clear the new, un-uploaded file for
+deletion. The sidecar closes that hole: the re-capture rewrites the file with a
+newer mtime than its stale sidecar, so it reads as un-verified and is never
+touched until it is itself uploaded (which refreshes the sidecar).
+
+A consequence: GC reclaims nothing it cannot prove was uploaded/downloaded, so a
+legacy cache populated before this shipped is GC-inert until its files are next
+accessed (safe — it under-evicts, never over-evicts). It also does NOT detect an
+object deleted out from under the cache server-side; the calibration bucket is
+treated as append-only.
 
 Policy
 ------
-One sweep, two stages, over confirmed-in-bucket units only (a "unit" is a whole
-session date-dir or a whole model compound-dir; we evict at that granularity so
-the date-folder walkers stay coherent and a re-download is a lazy no-op):
+One sweep, two stages, over verified units only (a "unit" is a whole session
+date-dir or a whole model compound-dir; we evict at that granularity so the
+date-folder walkers stay coherent and a re-download is a lazy no-op):
 
   1. TTL  — drop any unit whose newest file is older than MAX_AGE_DAYS.
   2. Cap  — if still over MAX_GB, evict oldest-first until under the cap.
 
-Units touched within `recency_floor_hours` (default 24) are never evicted, so an
-in-flight download or training run is never yanked out from under itself.
+A unit is verified only if EVERY file in it is verified, so an in-progress
+training run writing un-uploaded outputs into a session dir keeps that whole
+unit un-evictable until those outputs are uploaded.
+
+In-flight protection
+--------------------
+Units touched within `recency_floor_hours` (default 24) are never evicted.
+Recency is keyed off mtime, not atime (NTFS atime is disabled by default on
+Windows). Because a cache-hit read doesn't normally bump mtime, the storage
+adapters call mark_used() on every cache hit, which re-stamps the file (and its
+sidecar) to "now" so an actively-read session stays fresh and protected. (A run
+longer than the recency floor that neither re-reads nor writes for that whole
+window is the residual gap; intermittent output writes during training cover the
+common case.)
 
 Trigger
 -------
-`maybe_run_gc()` is called from the Tigris read/write chokepoints. It is cheap
-on the hot path: it reads a stamp file and returns immediately unless
+`maybe_run_gc()` is called from the Tigris read/write chokepoints. It is cheap on
+the hot path: it reads a stamp file and returns immediately unless
 GC_INTERVAL_HOURS have elapsed. When a sweep is due it runs in a background
 daemon thread (guarded by a cache-wide lock file) so the triggering call never
-blocks. Recency is keyed off mtime, not atime — NTFS last-access updates are
-disabled by default on Windows, where the calibration desktops run.
+blocks. The sweep is now a pure local stat-walk (no network), so it is fast and
+cannot outlive the lock-stale window.
 
 Configuration (all optional; read at call time):
     AXIO_CALIBRATION_CACHE_GC                 master switch (default on; "0"/"false"/"no"/"off" disables)
@@ -58,7 +87,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, Optional
+from typing import Callable, Optional
 
 # ---------- configuration ----------
 
@@ -75,6 +104,7 @@ DEFAULT_LOCK_STALE_HOURS = 1.0
 
 STAMP_NAME = ".gc_stamp"
 LOCK_NAME = ".gc.lock"
+SIDECAR_SUFFIX = ".v"  # verification sidecar: "<dir>/.<filename>.v"
 
 DOTTED_DATE_RE = re.compile(r"^(\d{1,2})\.(\d{1,2})\.(\d{4})$")
 
@@ -118,24 +148,15 @@ def _fmt_bytes(n: float) -> str:
     return f"{n:.1f} PiB"
 
 
-def _dotted_to_iso(dotted: str) -> str:
-    """'12.20.2024' -> '2024-12-20'."""
-    mo, d, y = dotted.split(".")
-    return f"{int(y):04d}-{int(mo):02d}-{int(d):02d}"
-
-
-def _bucket_key_for(parts: tuple[str, ...]) -> str:
-    """Map a cache-relative path to its bucket key. Mirrors the inverse of the
-    cache layout transforms shared by both storage modules:
-      - drop any 'calibration_data' path segment
-      - dotted date segments ('12.20.2024') -> ISO ('2024-12-20')
-      - a trailing '.csv' becomes '.csv.gz' (the cache decompresses on download)
-    """
-    out = [p for p in parts if p != "calibration_data"]
-    out = [_dotted_to_iso(p) if DOTTED_DATE_RE.match(p) else p for p in out]
-    if out and out[-1].endswith(".csv"):
-        out[-1] = out[-1] + ".gz"
-    return "/".join(out)
+def _under_root(path: Path, cache_root: Optional[Path]) -> bool:
+    """True if path is inside cache_root (or cache_root is None = unguarded)."""
+    if cache_root is None:
+        return True
+    try:
+        path.resolve().relative_to(Path(cache_root).resolve())
+        return True
+    except (ValueError, OSError):
+        return False
 
 
 def _unit_parts(parts: tuple[str, ...]) -> Optional[tuple[str, ...]]:
@@ -172,14 +193,81 @@ def _prune_empty_parents(start: Path, root: Path) -> None:
         pass
 
 
+# ---------- verification sidecars ----------
+
+def _sidecar_for(path: Path) -> Path:
+    """Hidden verification marker beside `path`: '<dir>/.<name>.v'. Hidden so the
+    cache walk (which skips dotfiles) never treats it as cache content, and it
+    rides along inside the unit dir so eviction removes it with the unit."""
+    p = Path(path)
+    return p.parent / f".{p.name}{SIDECAR_SUFFIX}"
+
+
+def _is_verified(path: Path, file_mtime: float) -> bool:
+    """A file is verified iff its sidecar exists and is at least as new as the
+    file. A file rewritten after its last upload/download (a re-capture) has a
+    newer mtime than its stale sidecar and so reads as un-verified."""
+    try:
+        return _sidecar_for(path).stat().st_mtime >= file_mtime
+    except OSError:
+        return False
+
+
+def record_verified(path, cache_root=None, *, now: Optional[float] = None) -> None:
+    """Mark `path` as confirmed-in-bucket. Call AFTER a confirmed upload or
+    download completes. Writes/refreshes the sidecar to `now` (>= the file's
+    mtime). No-op if `path` is outside cache_root. Never raises."""
+    try:
+        p = Path(path)
+        if not _under_root(p, cache_root):
+            return
+        sc = _sidecar_for(p)
+        try:
+            sc.touch()
+        except OSError:
+            return
+        t = time.time() if now is None else now
+        try:
+            os.utime(sc, (t, t))
+        except OSError:
+            pass
+    except Exception:
+        pass
+
+
+def mark_used(path, cache_root=None, *, now: Optional[float] = None) -> None:
+    """Re-stamp `path` (and its sidecar, if any) to `now` so recency tracks real
+    use, not just download time. Call on every cache HIT. Refreshing the sidecar
+    in lockstep keeps a verified file verified (file.mtime == sidecar.mtime); a
+    file with no sidecar stays un-verified (and thus protected). No-op outside
+    cache_root. Never raises."""
+    try:
+        p = Path(path)
+        if not _under_root(p, cache_root) or not p.exists():
+            return
+        t = time.time() if now is None else now
+        try:
+            os.utime(p, (t, t))
+        except OSError:
+            return
+        sc = _sidecar_for(p)
+        if sc.exists():
+            try:
+                os.utime(sc, (t, t))
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
 # ---------- cache walk ----------
 
 @dataclass
 class _FileEntry:
     size: int
     mtime: float
-    key: str
     unit: Optional[tuple[str, ...]]
+    verified: bool
 
 
 def _walk(root: Path) -> list[_FileEntry]:
@@ -194,7 +282,7 @@ def _walk(root: Path) -> list[_FileEntry]:
         except ValueError:
             continue
         parts = rel.parts
-        # skip dotfiles/dot-dirs anywhere (covers .gc_stamp / .gc.lock)
+        # skip dotfiles/dot-dirs anywhere (covers .gc_stamp / .gc.lock / sidecars)
         if any(p.startswith(".") for p in parts):
             continue
         try:
@@ -205,8 +293,8 @@ def _walk(root: Path) -> list[_FileEntry]:
             _FileEntry(
                 size=st.st_size,
                 mtime=st.st_mtime,
-                key=_bucket_key_for(parts),
                 unit=_unit_parts(parts),
+                verified=_is_verified(f, st.st_mtime),
             )
         )
     return entries
@@ -219,7 +307,7 @@ class GCReport:
     ran: bool = False
     freed_bytes: int = 0
     evicted_units: list[str] = field(default_factory=list)
-    pending_files: int = 0
+    pending_files: int = 0   # un-verified (not confirmed in bucket) files left in place
     pending_bytes: int = 0
     kept_bytes: int = 0
 
@@ -294,7 +382,6 @@ def _write_stamp(stamp: Path, now: float) -> None:
 
 def run_gc(
     cache_root: str | Path,
-    bucket_index: Callable[[Iterable[str]], Iterable[str]],
     *,
     max_gb: Optional[float] = None,
     max_age_days: Optional[float] = None,
@@ -302,12 +389,9 @@ def run_gc(
     now: Optional[float] = None,
     logger: Optional[Callable[[str], None]] = None,
 ) -> GCReport:
-    """Run one GC sweep synchronously and return a GCReport.
-
-    bucket_index(keys) -> the subset of `keys` that exist in the bucket. The
-    host injects this; GC stays backend-agnostic. If it raises, GC deletes
-    nothing (we never evict what we couldn't confirm).
-    """
+    """Run one GC sweep synchronously and return a GCReport. Local-only: a file
+    is evictable only if it carries a fresh verification sidecar (see module
+    docstring)."""
     now = time.time() if now is None else now
     root = Path(cache_root)
     report = GCReport()
@@ -319,40 +403,31 @@ def run_gc(
         report.ran = True
         return report
 
-    candidate_keys = {e.key for e in entries if e.unit is not None}
-    present: set[str] = set()
-    if candidate_keys:
-        try:
-            present = set(bucket_index(candidate_keys))
-        except Exception as e:
-            _log(logger, f"[cache-gc] bucket index failed; not evicting: {e}")
-            return report
-
     max_gb = _resolve_float(max_gb, ENV_MAX_GB, DEFAULT_MAX_GB)
     max_age_days = _resolve_float(max_age_days, ENV_MAX_AGE_DAYS, DEFAULT_MAX_AGE_DAYS)
     cap_bytes = int(max_gb * (1024 ** 3))
     age_cutoff = now - max_age_days * 86400.0
     recency_cutoff = now - recency_floor_hours * 3600.0
 
-    # group files into units
+    # group files into units; a unit is verified only if EVERY file is verified
     units: dict[tuple[str, ...], dict] = {}
     for e in entries:
         if e.unit is None:
             continue  # unrecognized file — leave it, don't count against cap
         u = units.setdefault(
-            e.unit, {"size": 0, "mtime": 0.0, "files": 0, "confirmed": True}
+            e.unit, {"size": 0, "mtime": 0.0, "files": 0, "verified": True}
         )
         u["size"] += e.size
         u["mtime"] = max(u["mtime"], e.mtime)
         u["files"] += 1
-        if e.key not in present:
-            u["confirmed"] = False
+        if not e.verified:
+            u["verified"] = False
 
     total_size = 0
     evictable: list[tuple[tuple[str, ...], dict]] = []
     for ukey, u in units.items():
         total_size += u["size"]
-        if not u["confirmed"]:
+        if not u["verified"]:
             report.pending_files += u["files"]
             report.pending_bytes += u["size"]
             continue
@@ -396,8 +471,8 @@ def run_gc(
             logger,
             f"[cache-gc] freed {_fmt_bytes(report.freed_bytes)} across "
             f"{len(report.evicted_units)} unit(s); kept {_fmt_bytes(report.kept_bytes)}; "
-            f"{report.pending_files} file(s)/{_fmt_bytes(report.pending_bytes)} pending "
-            f"upload left in place",
+            f"{report.pending_files} file(s)/{_fmt_bytes(report.pending_bytes)} un-verified "
+            f"(not confirmed in bucket) left in place",
         )
     return report
 
@@ -406,7 +481,6 @@ def run_gc(
 
 def maybe_run_gc(
     cache_root: str | Path,
-    bucket_index: Callable[[Iterable[str]], Iterable[str]],
     *,
     now: Optional[float] = None,
     logger: Optional[Callable[[str], None]] = None,
@@ -443,7 +517,7 @@ def maybe_run_gc(
 
         def _do():
             try:
-                run_gc(root, bucket_index, now=now, logger=logger, **run_kwargs)
+                run_gc(root, now=now, logger=logger, **run_kwargs)
             except Exception as e:
                 _log(logger, f"[cache-gc] sweep failed: {e}")
             finally:
