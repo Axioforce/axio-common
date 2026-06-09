@@ -43,7 +43,7 @@ class CalibrationBucketSession(Base):
     # are lex-correct because ISO dates sort.
     date_iso = Column(String, nullable=False, index=True)
     type_id = Column(String, nullable=False, index=True)
-    # Calibration family: 'lite' | 'lp' | 'xl' | None when type isn't mapped.
+    # Calibration family: 'lite' | 'lp' | 'xl' | 'insole' | None when type isn't mapped.
     family = Column(String, nullable=True)
     # 1-based index within this plate's recent sessions (recomputed on each sync).
     session_number = Column(Integer, nullable=False, default=1)
@@ -76,6 +76,12 @@ class CalibrationBucketSession(Base):
     # legacy rows (pre-redesign) and for insole/non-force-plate sessions whose
     # procedure isn't day-numbered. Set by the DAQ via POST /start.
     day_number = Column(Integer, nullable=True, index=True)
+
+    # Insole-only session metadata (NULL for force-plate / legacy rows).
+    # `size` = shoe size (string to allow "10.5", "M9/W10.5"); set by the
+    # DAQ via POST /start. `room_temp` = ambient °F, optional.
+    size = Column(String, nullable=True)
+    room_temp = Column(Float, nullable=True)
 
     # Admin flags. Replaces _config/admin_state.json's session_flags.
     flag_complete = Column(Boolean, nullable=False, default=False)
@@ -201,6 +207,8 @@ class CalibrationBucketSessionResponse(BaseModel):
     location: Optional[str] = None
     tests_txt_fields: Optional[dict] = None
     day_number: Optional[int] = None
+    size: Optional[str] = None
+    room_temp: Optional[float] = None
     flag_complete: bool = False
     flag_soft_deleted: bool = False
     is_overridden: bool = False
