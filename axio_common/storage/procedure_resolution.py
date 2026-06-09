@@ -133,19 +133,31 @@ def validate_family_put(payload: dict, known_activity_ids) -> List[str]:
 
 def snapshot_for_session(
     *,
-    family_activities,   # list[tuple[activity_id, order_index]] in master order
-    day_members_by_day,  # dict[int, set[str]]
-    days,                # dict[int, dict] with key 'reverse_order'
+    family_activities,    # list[tuple[activity_id, order_index]] master order
+    day_members_by_day,   # dict[int, set[str]]
+    days,                 # dict[int, dict] with key 'reverse_order'
     day_number,
+    day_order_by_day=None,  # dict[int, dict[str, int|None]] — per-day order
 ):
-    """Resolve a (family, day) into the ordered activity_id list to snapshot
-    on a session row at create time. Members are taken from the day's
-    membership set, projected onto master-list order, then reversed if the
-    day's reverse_order flag is set. Returns [] when the day isn't defined."""
+    """Resolve a (family, day) into the ordered activity_id list. If the day
+    has explicit per-day order_index values, sort by those (activities with
+    no per-day index sort last, by master order). Otherwise fall back to the
+    family master order, reversed when the day's reverse_order is set.
+    Returns [] when the day isn't defined."""
     day = days.get(day_number)
     if day is None:
         return []
     members = day_members_by_day.get(day_number, set())
+    per_day = (day_order_by_day or {}).get(day_number, {})
+    if any(per_day.get(aid) is not None for aid in members):
+        master_idx = {aid: i for i, (aid, _) in enumerate(family_activities)}
+        return sorted(
+            members,
+            key=lambda aid: (
+                per_day.get(aid) is None,                        # explicit first
+                per_day.get(aid, master_idx.get(aid, 1 << 30)),  # then by index
+            ),
+        )
     ordered = [aid for aid, _ in family_activities if aid in members]
     if day.get("reverse_order"):
         ordered = list(reversed(ordered))
