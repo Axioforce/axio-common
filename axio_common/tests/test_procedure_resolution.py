@@ -72,6 +72,21 @@ class TestSnapshotForSession(unittest.TestCase):
         )  # no day_order_by_day → master order then reversed
         self.assertEqual(out, ["TR-LAT","TR-MIP","TR-MDS"])
 
+    def test_per_day_order_mixes_explicit_none_and_absent_without_crash(self):
+        members = {3: {"TR-MDS", "TR-MIP", "TR-LAT", "TR-LNG"}}
+        # TR-LAT=0, TR-MDS=1 (explicit); TR-MIP=None (explicit None); TR-LNG absent
+        per_day = {3: {"TR-MDS": 1, "TR-LAT": 0, "TR-MIP": None}}
+        out = pr.snapshot_for_session(
+            family_activities=FAMILY_ACTS,
+            day_members_by_day=members,
+            days={3: {"reverse_order": False}},
+            day_number=3,
+            day_order_by_day=per_day,
+        )
+        # explicit-index members first (by index): TR-LAT(0), TR-MDS(1);
+        # then None/absent by master order: TR-MIP(master 1), TR-LNG(master 3)
+        self.assertEqual(out, ["TR-LAT", "TR-MDS", "TR-MIP", "TR-LNG"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -154,8 +154,8 @@ def snapshot_for_session(
         return sorted(
             members,
             key=lambda aid: (
-                per_day.get(aid) is None,                        # explicit first
-                per_day.get(aid, master_idx.get(aid, 1 << 30)),  # then by index
+                per_day.get(aid) is None,                                          # explicit first
+                per_day[aid] if per_day.get(aid) is not None else master_idx.get(aid, 1 << 30),
             ),
         )
     ordered = [aid for aid, _ in family_activities if aid in members]
