@@ -143,7 +143,14 @@ def snapshot_for_session(
     has explicit per-day order_index values, sort by those (activities with
     no per-day index sort last, by master order). Otherwise fall back to the
     family master order, reversed when the day's reverse_order is set.
-    Returns [] when the day isn't defined."""
+    Returns [] when the day isn't defined.
+
+    Fallback path: when ``day_order_by_day`` is None/absent for the day, OR
+    all of the day's members have a None per-day index (e.g. force-plate
+    families that don't assign per-day order), the legacy master-order path
+    is used — returning activities in master order, reversed iff
+    ``reverse_order`` is set.  This is intentional backward-compatible
+    behavior."""
     day = days.get(day_number)
     if day is None:
         return []
@@ -154,8 +161,9 @@ def snapshot_for_session(
         return sorted(
             members,
             key=lambda aid: (
-                per_day.get(aid) is None,                                          # explicit first
-                per_day[aid] if per_day.get(aid) is not None else master_idx.get(aid, 1 << 30),
+                (v := per_day.get(aid)) is None,                       # explicit-index members first
+                v if v is not None else master_idx.get(aid, 1 << 30),  # then by per-day index (None/absent → master)
+                master_idx.get(aid, 1 << 30),                          # deterministic tiebreak on equal indices
             ),
         )
     ordered = [aid for aid, _ in family_activities if aid in members]

@@ -87,6 +87,25 @@ class TestSnapshotForSession(unittest.TestCase):
         # then None/absent by master order: TR-MIP(master 1), TR-LNG(master 3)
         self.assertEqual(out, ["TR-LAT", "TR-MDS", "TR-MIP", "TR-LNG"])
 
+    def test_legacy_fallback_forward_order_when_no_per_day(self):
+        members = {1: {"TR-MDS", "TR-MIP", "TR-LAT"}}
+        out = pr.snapshot_for_session(
+            family_activities=FAMILY_ACTS, day_members_by_day=members,
+            days={1: {"reverse_order": False}}, day_number=1,
+        )
+        self.assertEqual(out, ["TR-MDS", "TR-MIP", "TR-LAT"])  # master order, not reversed
+
+    def test_duplicate_per_day_index_is_deterministic_by_master_order(self):
+        members = {1: {"TR-MDS", "TR-MIP", "TR-LAT"}}
+        # TR-LAT and TR-MDS share index 0 → tiebreak by master order (TR-MDS=0 before TR-LAT=2)
+        per_day = {1: {"TR-LAT": 0, "TR-MDS": 0, "TR-MIP": 1}}
+        out = pr.snapshot_for_session(
+            family_activities=FAMILY_ACTS, day_members_by_day=members,
+            days={1: {"reverse_order": False}}, day_number=1,
+            day_order_by_day=per_day,
+        )
+        self.assertEqual(out, ["TR-MDS", "TR-LAT", "TR-MIP"])
+
 
 if __name__ == "__main__":
     unittest.main()
