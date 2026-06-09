@@ -6,8 +6,9 @@ Three-level override cascade:
   CalibrationActivityDayOverride (per day) → membership + description_override, tags
 
 Day sequence for (family, day) = the family's master list filtered to the
-activities that have a day-override row for that day, ordered by order_index,
-then reversed if that day's CalibrationFamilyDay.reverse_order is set.
+activities that have a day-override row for that day, ordered by the
+day-override order_index when set, else by the family master order_index then
+reversed if that day's CalibrationFamilyDay.reverse_order is set.
 Layered over axio_common.storage.activities defaults (the fallback when empty).
 """
 from sqlalchemy import (
@@ -89,6 +90,10 @@ class CalibrationActivityDayOverride(Base):
         nullable=False, index=True,
     )
     day_number = Column(Integer, nullable=False)
+    # Per-day capture order. NULL for families that order by the family
+    # master order_index (+ reverse_order) — those resolve exactly as before.
+    # Insole sets this explicitly so each day can have its own sequence.
+    order_index = Column(Integer, nullable=True)
     description_override = Column(Text, nullable=True)
     tags = Column(JSON, nullable=True)                    # list[str]
 
