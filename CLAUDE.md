@@ -32,7 +32,7 @@ bump-my-version bump patch                    # bump version (also: minor / majo
 `update_axio_common.sh` automates the full release: prompts for a bump type, bumps + commits + tags, then
 reinstalls the new version into the `axio-server` and `axio-dash` conda envs.
 
-- **Package name**: `axio_common` (pyproject `[project]`); current version **0.33.0**.
+- **Package name**: `axio_common` (pyproject `[project]`); current version **0.37.0**.
 - **Build**: setuptools/wheel; packages auto-discovered (`tool.setuptools.packages.find`).
 - **Deps**: SQLAlchemy>=2.0, pydantic>=2.0, psycopg2-binary, boto3>=1.34, dotenv.
 
@@ -120,6 +120,10 @@ models under `<type>/<device_id>/models/`. Two auto-selected backends: **S3/boto
 `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` are set; **server-mediated** (presigned URLs from `axio-server`,
 `AXIO_STORAGE_TOKEN` bearer) otherwise — keeping the bucket secret off daemon machines. Override with
 `AXIO_STORAGE_BACKEND=s3|server`. `storage/picker.py` provides Tk bucket-browser dialogs (opt-in; needs tkinter).
+Picker loading is piece-wise (v0.37.0): `load_types_and_devices()` fans the per-type device listings out over a
+thread pool, streams chunks to the UI as each type completes, and caches the result for 5 min (instant reopen);
+tree-node expansion in the hierarchical pickers fetches off-thread behind the "loading..." placeholder, so the
+dialogs never block on network.
 
 ### Key environment variables
 

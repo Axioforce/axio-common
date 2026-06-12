@@ -24,10 +24,12 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 import tkinter as tk
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from tkinter import ttk
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 from . import storage_core as _sc
 
@@ -57,6 +59,143 @@ def _split_iid(iid: str) -> tuple[str, str]:
         return "placeholder", ""
     kind, _, payload = iid.partition(":")
     return kind, payload
+
+
+# ---------- device-list loading (parallel + cached) ----------
+#
+# Listing devices used to be the pickers' startup bottleneck: one sequential
+# LIST per type prefix (~18 round trips — far worse on the server-mediated
+# backend) before the device pane showed anything. The loader below fans the
+# per-type listings out over a thread pool, streams results to the UI as each
+# type completes, and caches the final result so reopening a picker within
+# the TTL is instant.
+
+_DEVICE_CACHE_TTL = 300.0  # seconds
+_device_cache: dict = {"ts": 0.0, "types": None, "devices": None}
+_device_cache_lock = threading.Lock()
+
+
+def _cached_types_devices() -> Optional[tuple[list[str], list[str]]]:
+    with _device_cache_lock:
+        if (
+            _device_cache["types"] is not None
+            and time.time() - _device_cache["ts"] < _DEVICE_CACHE_TTL
+        ):
+            return list(_device_cache["types"]), list(_device_cache["devices"])
+    return None
+
+
+def _store_types_devices(types: list[str], devices: list[str]) -> None:
+    with _device_cache_lock:
+        _device_cache.update(
+            ts=time.time(), types=list(types), devices=list(devices)
+        )
+
+
+def load_types_and_devices(
+    on_types: Optional[Callable[[list[str]], None]] = None,
+    on_devices_chunk: Optional[
+        Callable[[Optional[str], list[str], int, int], None]
+    ] = None,
+    *,
+    use_cache: bool = True,
+    workers: int = 8,
+) -> tuple[list[str], list[str]]:
+    """Fetch (types, all_devices) with the per-type listings done in parallel.
+
+    Blocking — call from a worker thread. Optional callbacks fire as data
+    arrives so a UI can populate piece-wise (callbacks run on the calling
+    thread; marshal to Tk yourself):
+
+        on_types(types)                            once, as soon as types are in
+        on_devices_chunk(type_id, devices, done, total)   per completed type
+                                                   (type_id None on a cache hit,
+                                                   which delivers one full chunk)
+
+    Results are cached for ``_DEVICE_CACHE_TTL`` seconds so reopening a
+    picker is instant; pass use_cache=False to force a refresh.
+    """
+    if use_cache:
+        cached = _cached_types_devices()
+        if cached:
+            types, devices = cached
+            if on_types:
+                on_types(types)
+            if on_devices_chunk:
+                on_devices_chunk(None, devices, len(types), len(types))
+            return types, devices
+
+    types = _sc.list_device_types()
+    if on_types:
+        on_types(types)
+    all_devices: list[str] = []
+    done = 0
+    total = len(types)
+    if total:
+        with ThreadPoolExecutor(max_workers=min(workers, total)) as ex:
+            futures = {ex.submit(_sc.list_devices, t): t for t in types}
+            for fut in as_completed(futures):
+                t = futures[fut]
+                devs = fut.result()
+                all_devices.extend(devs)
+                done += 1
+                if on_devices_chunk:
+                    on_devices_chunk(t, devs, done, total)
+    all_devices.sort()
+    _store_types_devices(types, all_devices)
+    return types, all_devices
+
+
+def _wire_initial_device_load(
+    top: tk.Toplevel,
+    status_var: tk.StringVar,
+    state: dict,
+    refresh_devices: Callable[[], None],
+    type_radios_frame: ttk.Frame,
+    type_var: tk.StringVar,
+    on_done: Optional[Callable[[], None]] = None,
+) -> None:
+    """Shared piece-wise startup for the 3-pane pickers: build the type radio
+    row as soon as types arrive, then append each type's devices to the list
+    as its listing completes. All Tk access happens via top.after()."""
+
+    def _populate_types(types: list[str]):
+        ttk.Radiobutton(
+            type_radios_frame, text="All", variable=type_var, value="All",
+        ).pack(side="left")
+        for t in types:
+            ttk.Radiobutton(
+                type_radios_frame, text=t, variable=type_var, value=t,
+            ).pack(side="left", padx=2)
+
+    def _add_devices(devs: list[str], done: int, total: int):
+        state["all_devices"] = sorted(state["all_devices"] + list(devs))
+        refresh_devices()
+        if done < total:
+            status_var.set(
+                f"Loading devices… {done}/{total} types "
+                f"({len(state['all_devices'])} so far)"
+            )
+
+    def _work():
+        try:
+            load_types_and_devices(
+                on_types=lambda types: top.after(
+                    0, lambda: _populate_types(types)
+                ),
+                on_devices_chunk=lambda _t, devs, done, total: top.after(
+                    0, lambda: _add_devices(devs, done, total)
+                ),
+            )
+            if on_done:
+                top.after(0, on_done)
+        except Exception as e:
+            try:
+                top.after(0, lambda: status_var.set(f"Error loading bucket: {e}"))
+            except tk.TclError:
+                pass  # dialog closed mid-load
+
+    threading.Thread(target=_work, daemon=True).start()
 
 
 # ---------- progress dialog ----------
@@ -150,39 +289,96 @@ class _BucketTree:
         self.tree.column("size", width=110, anchor="e")
         self.tree.bind("<<TreeviewOpen>>", self._on_open)
 
-        # Populate top-level types
-        for t in _sc.list_device_types():
-            iid = f"{_K_TYPE}:{t}"
-            self.tree.insert("", "end", iid=iid, text=t, open=False)
-            self.tree.insert(iid, "end", iid=f"{iid}/{_PLACEHOLDER}", text="loading...")
+        # Populate top-level types off-thread so the dialog opens instantly
+        loading_iid = self.tree.insert("", "end", text="loading types...")
+        threading.Thread(
+            target=self._fetch_types, args=(loading_iid,), daemon=True,
+        ).start()
+
+    def _fetch_types(self, loading_iid: str):
+        try:
+            types = _sc.list_device_types()
+        except Exception as e:
+            msg = f"err: {e}"
+            self._after(lambda: self.tree.exists(loading_iid)
+                        and self.tree.item(loading_iid, text=msg))
+            return
+
+        def fill():
+            if not self.tree.exists(loading_iid):
+                return
+            self.tree.delete(loading_iid)
+            for t in types:
+                iid = f"{_K_TYPE}:{t}"
+                self.tree.insert("", "end", iid=iid, text=t, open=False)
+                self.tree.insert(iid, "end", iid=f"{iid}/{_PLACEHOLDER}", text="loading...")
+
+        self._after(fill)
+
+    def _after(self, fn):
+        """tree.after(0, fn), swallowing the TclError of a closed dialog."""
+        try:
+            self.tree.after(0, fn)
+        except tk.TclError:
+            pass
 
     def _on_open(self, _evt):
         iid = self.tree.focus()
         children = self.tree.get_children(iid)
         if not (len(children) == 1 and children[0].endswith(_PLACEHOLDER)):
             return  # already loaded
-        self.tree.delete(children[0])
-        self._populate(iid)
+        # Keep the "loading..." placeholder visible and fetch off-thread —
+        # expanding a node never freezes the dialog. A re-expand while a
+        # fetch is in flight spawns a second fetch whose fill no-ops
+        # (the placeholder is already gone by then).
+        threading.Thread(
+            target=self._fetch_and_fill, args=(iid, children[0]), daemon=True,
+        ).start()
 
-    def _populate(self, iid: str):
+    def _fetch_and_fill(self, parent_iid: str, placeholder_iid: str):
+        try:
+            rows = self._fetch_children(parent_iid)
+        except Exception as e:
+            msg = f"err: {e}"
+            self._after(lambda: self.tree.exists(placeholder_iid)
+                        and self.tree.item(placeholder_iid, text=msg))
+            return
+
+        def fill():
+            if not self.tree.exists(placeholder_iid):
+                return
+            self.tree.delete(placeholder_iid)
+            for parent, child_iid, text, lazy_text in rows:
+                self.tree.insert(
+                    parent or parent_iid, "end", iid=child_iid, text=text,
+                )
+                if lazy_text is not None:
+                    self.tree.insert(
+                        child_iid, "end",
+                        iid=f"{child_iid}/{_PLACEHOLDER}", text=lazy_text,
+                    )
+
+        self._after(fill)
+
+    def _fetch_children(self, iid: str) -> list[tuple]:
+        """Network-only: list a node's children as insert ops
+        (parent_iid_or_None, iid, text, lazy_placeholder_text_or_None).
+        parent None = the expanded node itself; rows may reference an iid
+        inserted by an earlier row (nested file leaves under _K_DATE)."""
         kind, payload = _split_iid(iid)
+        rows: list[tuple] = []
         if kind == _K_TYPE:
-            type_id = payload
-            for dev in _sc.list_devices(type_id):
-                child_iid = f"{_K_DEVICE}:{dev}"
-                self.tree.insert(iid, "end", iid=child_iid, text=dev, open=False)
-                self.tree.insert(child_iid, "end", iid=f"{child_iid}/{_PLACEHOLDER}", text="loading...")
+            for dev in _sc.list_devices(payload):
+                rows.append((None, f"{_K_DEVICE}:{dev}", dev, "loading..."))
         elif kind == _K_DEVICE:
             device_id = payload
             for d in _sc.list_dates(device_id):
                 if d == "models":
-                    child_iid = f"{_K_KIND}:{device_id}|models"
-                    self.tree.insert(iid, "end", iid=child_iid, text="models", open=False)
-                    self.tree.insert(child_iid, "end", iid=f"{child_iid}/{_PLACEHOLDER}", text="loading...")
+                    child = f"{_K_KIND}:{device_id}|models"
+                    rows.append((None, child, "models", "loading..."))
                 else:
-                    child_iid = f"{_K_DATE}:{device_id}|{d}"
-                    self.tree.insert(iid, "end", iid=child_iid, text=d, open=False)
-                    self.tree.insert(child_iid, "end", iid=f"{child_iid}/{_PLACEHOLDER}", text="loading...")
+                    child = f"{_K_DATE}:{device_id}|{d}"
+                    rows.append((None, child, d, "loading..."))
         elif kind == _K_DATE:
             device_id, date = payload.split("|", 1)
             listing = _sc.list_session(device_id, date)
@@ -190,40 +386,37 @@ class _BucketTree:
                 files = listing.train if k == "train" else listing.test
                 if not files:
                     continue
-                child_iid = f"{_K_KIND}:{device_id}|{date}|{k}"
-                self.tree.insert(iid, "end", iid=child_iid, text=k, open=False)
+                child = f"{_K_KIND}:{device_id}|{date}|{k}"
                 if self.expand_files:
+                    rows.append((None, child, k, None))
                     for full_key in files:
-                        leaf_iid = f"{_K_FILE}:{full_key}"
-                        self.tree.insert(
-                            child_iid, "end", iid=leaf_iid,
-                            text=os.path.basename(full_key),
-                        )
+                        rows.append((child, f"{_K_FILE}:{full_key}",
+                                     os.path.basename(full_key), None))
                 else:
-                    self.tree.insert(child_iid, "end", iid=f"{child_iid}/{_PLACEHOLDER}", text=f"{len(files)} files")
+                    rows.append((None, child, k, f"{len(files)} files"))
             if listing.tests_txt:
-                self.tree.insert(
-                    iid, "end", iid=f"{_K_FILE}:{listing.tests_txt}", text="tests.txt"
-                )
+                rows.append((None, f"{_K_FILE}:{listing.tests_txt}",
+                             "tests.txt", None))
         elif kind == _K_KIND and payload.endswith("|models"):
             device_id = payload.split("|", 1)[0]
             for compound in _sc.list_models(device_id):
-                child_iid = f"{_K_MODEL}:{device_id}|{compound}"
-                self.tree.insert(iid, "end", iid=child_iid, text=compound, open=False)
-                self.tree.insert(child_iid, "end", iid=f"{child_iid}/{_PLACEHOLDER}", text="loading...")
+                rows.append((None, f"{_K_MODEL}:{device_id}|{compound}",
+                             compound, "loading..."))
         elif kind == _K_KIND:
             # train/test that wasn't preloaded with files (expand_files=False)
             device_id, date, k = payload.split("|", 2)
             listing = _sc.list_session(device_id, date)
             files = listing.train if k == "train" else listing.test
             for full_key in files:
-                self.tree.insert(iid, "end", iid=f"{_K_FILE}:{full_key}", text=os.path.basename(full_key))
+                rows.append((None, f"{_K_FILE}:{full_key}",
+                             os.path.basename(full_key), None))
         elif kind == _K_MODEL:
             device_id, compound = payload.split("|", 1)
             prefix = f"{_sc.models_prefix(device_id)}{compound}/"
             for full_key in sorted(_sc.list_prefix(prefix, recursive=True)):
-                rel = full_key.removeprefix(prefix)
-                self.tree.insert(iid, "end", iid=f"{_K_FILE}:{full_key}", text=rel)
+                rows.append((None, f"{_K_FILE}:{full_key}",
+                             full_key.removeprefix(prefix), None))
+        return rows
 
 
 # ---------- pick_session ----------
@@ -691,31 +884,12 @@ def pick_sessions(
     ok_btn.config(command=on_ok)
     top.protocol("WM_DELETE_WINDOW", _close)
 
-    # --- initial load: types + devices ---
+    # --- initial load: types + devices (piece-wise, parallel, cached) ---
 
-    def _work_initial_load():
-        try:
-            types = _sc.list_device_types()
-            all_devices: list[str] = []
-            for t in types:
-                all_devices.extend(_sc.list_devices(t))
-            top.after(0, lambda: _populate_initial(types, sorted(all_devices)))
-        except Exception as e:
-            top.after(0, lambda: status_var.set(f"Error loading bucket: {e}"))
-
-    def _populate_initial(types: list[str], devices: list[str]):
-        ttk.Radiobutton(
-            type_radios_frame, text="All", variable=type_var, value="All",
-        ).pack(side="left")
-        for t in types:
-            ttk.Radiobutton(
-                type_radios_frame, text=t, variable=type_var, value=t,
-            ).pack(side="left", padx=2)
-        state["all_devices"] = devices
-        refresh_devices()
-        search_entry.focus_set()
-
-    threading.Thread(target=_work_initial_load, daemon=True).start()
+    _wire_initial_device_load(
+        top, status_var, state, refresh_devices,
+        type_radios_frame, type_var, on_done=search_entry.focus_set,
+    )
 
     top.wait_window()
     if owns_root:
@@ -1028,24 +1202,9 @@ def pick_session_files(
     ok_btn.config(command=on_ok)
     top.protocol("WM_DELETE_WINDOW", _close)
 
-    def _work_initial():
-        try:
-            types = _sc.list_device_types()
-            all_devices = []
-            for t in types:
-                all_devices.extend(_sc.list_devices(t))
-            top.after(0, lambda: _populate_initial(types, sorted(all_devices)))
-        except Exception as e:
-            top.after(0, lambda: status_var.set(f"Error loading bucket: {e}"))
+    # --- initial load: types + devices (piece-wise, parallel, cached) ---
 
-    def _populate_initial(types, devices):
-        ttk.Radiobutton(type_radios_frame, text="All",
-                        variable=type_var, value="All").pack(side="left")
-        for t in types:
-            ttk.Radiobutton(type_radios_frame, text=t,
-                            variable=type_var, value=t).pack(side="left", padx=2)
-        state["all_devices"] = devices
-        refresh_devices()
+    def _after_load():
         search_entry.focus_set()
         # Pre-select an initial device when the caller passed one (e.g.
         # RunNNLiteGUI passing the device used in the previous Tigris pick
@@ -1058,7 +1217,10 @@ def pick_session_files(
             dev_listbox.see(idx)
             on_device_selected()
 
-    threading.Thread(target=_work_initial, daemon=True).start()
+    _wire_initial_device_load(
+        top, status_var, state, refresh_devices,
+        type_radios_frame, type_var, on_done=_after_load,
+    )
 
     top.wait_window()
     if owns_root:
@@ -1329,24 +1491,9 @@ def pick_model_file(
     ok_btn.config(command=on_ok)
     top.protocol("WM_DELETE_WINDOW", _close)
 
-    def _work_initial():
-        try:
-            types = _sc.list_device_types()
-            all_devices = []
-            for t in types:
-                all_devices.extend(_sc.list_devices(t))
-            top.after(0, lambda: _populate_initial(types, sorted(all_devices)))
-        except Exception as e:
-            top.after(0, lambda: status_var.set(f"Error loading bucket: {e}"))
+    # --- initial load: types + devices (piece-wise, parallel, cached) ---
 
-    def _populate_initial(types, devices):
-        ttk.Radiobutton(type_radios_frame, text="All",
-                        variable=type_var, value="All").pack(side="left")
-        for t in types:
-            ttk.Radiobutton(type_radios_frame, text=t,
-                            variable=type_var, value=t).pack(side="left", padx=2)
-        state["all_devices"] = devices
-        refresh_devices()
+    def _after_load():
         search_entry.focus_set()
         # Pre-select an initial device when the caller passed one (e.g.
         # RunNNLiteGUI passing the device used in the previous Tigris pick
@@ -1359,7 +1506,10 @@ def pick_model_file(
             dev_listbox.see(idx)
             on_device_selected()
 
-    threading.Thread(target=_work_initial, daemon=True).start()
+    _wire_initial_device_load(
+        top, status_var, state, refresh_devices,
+        type_radios_frame, type_var, on_done=_after_load,
+    )
 
     top.wait_window()
     if owns_root:
