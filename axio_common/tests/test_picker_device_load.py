@@ -87,3 +87,42 @@ def test_expired_cache_refetches(monkeypatch):
     monkeypatch.setattr(picker, "_DEVICE_CACHE_TTL", 0.0)
     picker.load_types_and_devices()
     assert calls.count("types") == 2
+
+
+# ---------- drag-select row math (needs a Tk interpreter, no window shown) ----
+
+
+@pytest.fixture
+def tree():
+    import tkinter as tk
+    from tkinter import ttk
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk unavailable in this environment")
+    root.withdraw()
+    t = ttk.Treeview(root)
+    # a (open, with children) / b / c — visible order: a, a1, a2, b, c
+    t.insert("", "end", iid="a", text="a", open=True)
+    t.insert("a", "end", iid="a1", text="a1")
+    t.insert("a", "end", iid="a2", text="a2")
+    t.insert("", "end", iid="b", text="b", open=False)
+    t.insert("b", "end", iid="b1", text="b1")  # hidden: parent collapsed
+    t.insert("", "end", iid="c", text="c")
+    yield t
+    root.destroy()
+
+
+def test_visible_rows_skips_collapsed_branches(tree):
+    assert picker._visible_rows(tree) == ["a", "a1", "a2", "b", "c"]
+
+
+def test_drag_span_inclusive_and_direction_agnostic(tree):
+    assert picker._drag_span(tree, "a1", "b") == ["a1", "a2", "b"]
+    assert picker._drag_span(tree, "b", "a1") == ["a1", "a2", "b"]
+    assert picker._drag_span(tree, "c", "c") == ["c"]
+
+
+def test_drag_span_vanished_row_returns_empty(tree):
+    assert picker._drag_span(tree, "b1", "c") == []  # b1 not visible

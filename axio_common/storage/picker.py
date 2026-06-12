@@ -198,6 +198,69 @@ def _wire_initial_device_load(
     threading.Thread(target=_work, daemon=True).start()
 
 
+# ---------- drag-to-select ----------
+
+def _visible_rows(tree: ttk.Treeview, parent: str = "") -> list[str]:
+    """All currently *visible* rows in visual order (children of collapsed
+    nodes excluded) — the coordinate system for drag-band selection."""
+    rows: list[str] = []
+    for iid in tree.get_children(parent):
+        rows.append(iid)
+        if tree.item(iid, "open"):
+            rows.extend(_visible_rows(tree, iid))
+    return rows
+
+
+def _drag_span(tree: ttk.Treeview, anchor: str, cur: str) -> list[str]:
+    """Visible rows between anchor and cur inclusive; [] if either is gone
+    (e.g. its branch was collapsed mid-drag)."""
+    rows = _visible_rows(tree)
+    try:
+        lo, hi = sorted((rows.index(anchor), rows.index(cur)))
+    except ValueError:
+        return []
+    return rows[lo : hi + 1]
+
+
+def _enable_drag_select(tree: ttk.Treeview) -> None:
+    """Explorer-style click-and-drag band selection for a multi-select
+    Treeview: anchor on the pressed row, select the visual row range under
+    the pointer as it moves, auto-scroll past the edges. Bindings are
+    additive — default click selection and Ctrl/Shift multi-select keep
+    working; heading/separator presses (sort, column resize) are ignored."""
+    state: dict = {"anchor": None}
+
+    def on_press(event):
+        state["anchor"] = None
+        if tree.identify_region(event.x, event.y) in ("heading", "separator"):
+            return
+        if event.state & 0x0005:  # Shift (0x1) or Control (0x4) held
+            return
+        state["anchor"] = tree.identify_row(event.y) or None
+
+    def on_motion(event):
+        if state["anchor"] is None:
+            return
+        h = tree.winfo_height()
+        if event.y < 0:
+            tree.yview_scroll(-1, "units")
+        elif event.y > h:
+            tree.yview_scroll(1, "units")
+        cur = tree.identify_row(min(max(event.y, 1), h - 1))
+        if not cur:
+            rows = _visible_rows(tree)
+            if not rows:
+                return
+            cur = rows[0] if event.y <= 0 else rows[-1]
+        span = _drag_span(tree, state["anchor"], cur)
+        if span and set(span) != set(tree.selection()):
+            tree.selection_set(span)
+
+    tree.bind("<ButtonPress-1>", on_press, add="+")
+    tree.bind("<B1-Motion>", on_motion, add="+")
+    tree.bind("<ButtonRelease-1>", lambda e: state.update(anchor=None), add="+")
+
+
 # ---------- progress dialog ----------
 
 class _ProgressDialog:
@@ -528,6 +591,7 @@ def pick_files(
 
     bt = _BucketTree(container, expand_files=True)
     bt.tree.configure(selectmode="extended")
+    _enable_drag_select(bt.tree)
     yscroll = ttk.Scrollbar(container, orient="vertical", command=bt.tree.yview)
     bt.tree.configure(yscrollcommand=yscroll.set)
     bt.tree.pack(side="left", fill="both", expand=True)
@@ -556,7 +620,7 @@ def pick_files(
 
     ttk.Button(btn_frame, text="OK", command=on_ok).pack(side="right", padx=4)
     ttk.Button(btn_frame, text="Cancel", command=on_cancel).pack(side="right", padx=4)
-    hint = "Ctrl-click for multi-select. Pick files (leaves), not folders."
+    hint = "Drag or Ctrl-click for multi-select. Pick files (leaves), not folders."
     ttk.Label(btn_frame, text=hint, foreground="#666").pack(side="left")
 
     top.wait_window()
@@ -690,10 +754,11 @@ def pick_sessions(
     dev_scroll.pack(side="right", fill="y", pady=4)
     panes.add(dev_frame, weight=2)
 
-    sess_frame = ttk.LabelFrame(panes, text="Sessions")
+    sess_frame = ttk.LabelFrame(panes, text="Sessions (drag or Ctrl/Shift-click for multi)")
     sess_tree = ttk.Treeview(
         sess_frame, columns=("counts",), selectmode="extended", show="tree headings",
     )
+    _enable_drag_select(sess_tree)
     sess_tree.heading("#0", text="Date")
     sess_tree.heading("counts", text="train / test")
     sess_tree.column("#0", width=140, anchor="w")
@@ -1023,9 +1088,10 @@ def pick_session_files(
     sess_scroll.pack(side="right", fill="y", pady=4)
     panes.add(sess_frame, weight=2)
 
-    files_frame = ttk.LabelFrame(panes, text="Files (Ctrl/Shift-click to multi-select)")
+    files_frame = ttk.LabelFrame(panes, text="Files (drag or Ctrl/Shift-click to multi-select)")
     files_tree = ttk.Treeview(files_frame, columns=("kind",),
                               selectmode="extended", show="tree headings")
+    _enable_drag_select(files_tree)
     files_tree.heading("#0", text="Filename")
     files_tree.heading("kind", text="Kind")
     files_tree.column("#0", width=240, anchor="w")
