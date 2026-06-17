@@ -40,6 +40,11 @@ from .calibration_procedure import (
     CalibrationActivity, CalibrationFamilyActivity,
     CalibrationFamilyDay, CalibrationActivityDayOverride,
 )
+from .order import (
+    Order, ORDER_STATUSES,
+    ORDER_STATUS_OPEN, ORDER_STATUS_SHIPPED, ORDER_STATUS_CANCELLED,
+    ORDER_SOURCE_TRACKER, ORDER_SOURCE_MANUAL,
+)
 
 __all__ = [
     "Client", "Device", "Job", "Run",
@@ -62,4 +67,7 @@ __all__ = [
     "parse_load_cell_id",
     "CalibrationActivity", "CalibrationFamilyActivity",
     "CalibrationFamilyDay", "CalibrationActivityDayOverride",
+    "Order", "ORDER_STATUSES",
+    "ORDER_STATUS_OPEN", "ORDER_STATUS_SHIPPED", "ORDER_STATUS_CANCELLED",
+    "ORDER_SOURCE_TRACKER", "ORDER_SOURCE_MANUAL",
 ]

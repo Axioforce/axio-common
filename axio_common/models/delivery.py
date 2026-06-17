@@ -54,6 +54,13 @@ class Delivery(Base):
         String, ForeignKey("jobs.id", ondelete="SET NULL"),
         nullable=True, index=True,
     )
+    # Fulfillment order this shipment came from (one order ships N devices →
+    # N Delivery rows sharing a tracking number). Nullable: manually-logged
+    # and backfilled rows have no order.
+    order_id = Column(
+        Integer, ForeignKey("orders.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
 
     customer = Column(String, nullable=True, index=True)
     status = Column(
@@ -77,6 +84,7 @@ class Delivery(Base):
 
     device = relationship("Device", lazy="select")
     job = relationship("Job", lazy="select")
+    order = relationship("Order", back_populates="deliveries", lazy="select")
 
     __table_args__ = (
         Index("ix_deliveries_status_shipped_at", "status", "shipped_at"),
@@ -88,6 +96,7 @@ class DeliveryResponse(BaseModel):
     id: int
     device_axf_id: str
     job_id: Optional[str] = None
+    order_id: Optional[int] = None
     customer: Optional[str] = None
     status: str
     shipped_at: Optional[datetime] = None
@@ -106,6 +115,7 @@ class DeliveryResponse(BaseModel):
 class DeliveryCreateRequest(BaseModel):
     device_axf_id: str
     job_id: Optional[str] = None
+    order_id: Optional[int] = None
     customer: Optional[str] = None
     status: str = DELIVERY_STATUS_PENDING
     shipped_at: Optional[datetime] = None
