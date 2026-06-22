@@ -36,6 +36,7 @@ from .delivery import (
     DELIVERY_STATUS_PENDING, DELIVERY_STATUS_SHIPPED,
     DELIVERY_STATUS_DELIVERED, DELIVERY_STATUS_RETURNED,
 )
+from .device_cloud_model import DeviceCloudModel
 from .calibration_procedure import (
     CalibrationActivity, CalibrationFamilyActivity,
     CalibrationFamilyDay, CalibrationActivityDayOverride,
@@ -56,6 +57,7 @@ __all__ = [
     "Delivery", "DELIVERY_STATUSES",
     "DELIVERY_STATUS_PENDING", "DELIVERY_STATUS_SHIPPED",
     "DELIVERY_STATUS_DELIVERED", "DELIVERY_STATUS_RETURNED",
+    "DeviceCloudModel",
     "CORNER_POSITIONS", "ASSEMBLED_BASELINE_KINDS", "CALIBRATION_SESSION_STATUSES",
     "STAGE_TYPES", "STAGE_LOCATIONS", "COLOR_BINS",
     "KIND_TRAIN", "KIND_TEST", "KIND_OTHER",
