@@ -71,6 +71,7 @@ import json as _json
 import os
 import re
 import shutil
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -79,7 +80,13 @@ from typing import Callable, Iterable, Optional, Sequence
 
 import boto3
 from botocore.client import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import (
+    ClientError,
+    ConnectionClosedError,
+    ConnectTimeoutError,
+    EndpointConnectionError,
+    ReadTimeoutError,
+)
 
 DEFAULT_AXIO_SERVER_URL = "https://axio-server.fly.dev"
 
@@ -172,7 +179,23 @@ def _client_singleton():
             "s3",
             endpoint_url=os.environ.get("AWS_ENDPOINT_URL_S3", DEFAULT_ENDPOINT),
             region_name=os.environ.get("AWS_REGION", DEFAULT_REGION),
-            config=Config(signature_version="s3v4", max_pool_connections=32),
+            # Bounded so a stalled connection FAILS instead of hanging forever:
+            #   connect_timeout — cap the TCP/TLS handshake.
+            #   read_timeout    — cap each socket read; a stream that goes quiet
+            #                     this long is treated as dead (was botocore's
+            #                     60s default, made explicit here).
+            #   retries         — botocore's own bounded retry for transient
+            #                     errors on the *API call* (LIST/HEAD, the
+            #                     GetObject request, download_file's internals).
+            #                     This does NOT cover a stall mid-body-read; that
+            #                     is handled by _transfer_with_retry() below.
+            config=Config(
+                signature_version="s3v4",
+                max_pool_connections=32,
+                connect_timeout=10,
+                read_timeout=60,
+                retries={"max_attempts": 3, "mode": "standard"},
+            ),
         )
     return _client
 
@@ -422,6 +445,60 @@ def key_exists(key: str) -> bool:
         raise
 
 
+# Transfer-level retry. A stall mid-body-read (StreamingBody.read(), or the
+# urllib GET on the server backend) raises *after* the request has returned, so
+# botocore's client-level `retries=` never sees it. We retry the whole download
+# here — bounded — so a transient blip recovers but a genuine outage still FAILS
+# (after _TRANSFER_MAX_ATTEMPTS) rather than hanging forever or passing silently.
+_TRANSFER_MAX_ATTEMPTS = 3
+_TRANSFER_BACKOFF_BASE = 1.5  # seconds; exponential backoff: ~1.5s then ~3s
+
+_TRANSIENT_TRANSFER_ERRORS = (
+    ReadTimeoutError,
+    ConnectTimeoutError,
+    EndpointConnectionError,
+    ConnectionClosedError,
+    urllib.error.URLError,  # server-backend GET wraps socket.timeout etc.
+    TimeoutError,
+    ConnectionError,  # builtin: connection reset/aborted
+)
+
+
+def _is_retryable_transfer_error(exc: BaseException) -> bool:
+    """Transient (retry) vs. terminal (fail fast). A missing key (404) or auth
+    error (403) is terminal; timeouts, dropped connections and 5xx are not."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code >= 500  # 404/403 etc. -> don't retry
+    if isinstance(exc, _TRANSIENT_TRANSFER_ERRORS):
+        return True
+    if isinstance(exc, ClientError):  # boto3 5xx / throttling
+        code = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        return code is not None and int(code) >= 500
+    return False
+
+
+def _transfer_with_retry(do_transfer: Callable[[], None], tmp: Path) -> None:
+    """Run a download closure with bounded retries on transient errors.
+
+    `do_transfer` must (re)write `tmp` from scratch each call. The partial file
+    is cleared between failed attempts. Re-raises on a non-transient error or
+    once attempts are exhausted — deliberately: a truly-down bucket must fail,
+    not loop.
+    """
+    for attempt in range(1, _TRANSFER_MAX_ATTEMPTS + 1):
+        try:
+            do_transfer()
+            return
+        except Exception as e:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+            if attempt == _TRANSFER_MAX_ATTEMPTS or not _is_retryable_transfer_error(e):
+                raise
+            time.sleep(_TRANSFER_BACKOFF_BASE * (2 ** (attempt - 1)))
+
+
 def ensure_local(key: str, cache_root: Path | None = None) -> Path:
     """Download key to cache if not already present. Returns the local Path.
 
@@ -451,25 +528,33 @@ def ensure_local(key: str, cache_root: Path | None = None) -> Path:
             "/storage/presigned-download", {"key": key, "expires_in": 3600},
         )
         url = info["url"]
-        if key.endswith(".csv.gz"):
-            with urllib.request.urlopen(url, timeout=300) as resp:
-                body = resp.read()
-            with gzip.GzipFile(fileobj=io.BytesIO(body)) as gz, open(tmp, "wb") as dst:
-                shutil.copyfileobj(gz, dst, length=1024 * 1024)
-        else:
-            with urllib.request.urlopen(url, timeout=300) as resp, open(tmp, "wb") as dst:
-                shutil.copyfileobj(resp, dst, length=1024 * 1024)
+
+        def _server_transfer() -> None:
+            if key.endswith(".csv.gz"):
+                with urllib.request.urlopen(url, timeout=300) as resp:
+                    body = resp.read()
+                with gzip.GzipFile(fileobj=io.BytesIO(body)) as gz, open(tmp, "wb") as dst:
+                    shutil.copyfileobj(gz, dst, length=1024 * 1024)
+            else:
+                with urllib.request.urlopen(url, timeout=300) as resp, open(tmp, "wb") as dst:
+                    shutil.copyfileobj(resp, dst, length=1024 * 1024)
+
+        _transfer_with_retry(_server_transfer, tmp)
         tmp.replace(local)
         _cache_gc.record_verified(local, _eff_root)  # downloaded => confirmed in bucket
         return local
 
     s3 = _client_singleton()
-    if key.endswith(".csv.gz"):
-        body = s3.get_object(Bucket=_bucket(), Key=key)["Body"].read()
-        with gzip.GzipFile(fileobj=io.BytesIO(body)) as gz, open(tmp, "wb") as dst:
-            shutil.copyfileobj(gz, dst, length=1024 * 1024)
-    else:
-        s3.download_file(_bucket(), key, str(tmp))
+
+    def _s3_transfer() -> None:
+        if key.endswith(".csv.gz"):
+            body = s3.get_object(Bucket=_bucket(), Key=key)["Body"].read()
+            with gzip.GzipFile(fileobj=io.BytesIO(body)) as gz, open(tmp, "wb") as dst:
+                shutil.copyfileobj(gz, dst, length=1024 * 1024)
+        else:
+            s3.download_file(_bucket(), key, str(tmp))
+
+    _transfer_with_retry(_s3_transfer, tmp)
     tmp.replace(local)
     _cache_gc.record_verified(local, _eff_root)  # downloaded => confirmed in bucket
     return local
