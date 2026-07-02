@@ -125,8 +125,14 @@ class Job(Base):
             self.interrupted_at = current_time()
             if self.hostname:
                 from axio_common.utils.shared import client_by_hostname
-                client = client_by_hostname(hostname, db, update_activity=False)
-                client.remove_active_job(db)
+                # Look up by the job's own hostname: callers updating a job to
+                # "interrupted" don't pass the hostname arg, so the `hostname`
+                # param is None here and the old code silently found no client
+                # (leaving active_jobs inflated) or crashed on None. Guard the
+                # lookup so a decommissioned/renamed host can't break the requeue.
+                client = client_by_hostname(self.hostname, db, update_activity=False)
+                if client:
+                    client.remove_active_job(db)
         elif status == "queued" and prior_status not in ("queued", None):
             # Requeue after an assignment (interrupted, missed heartbeat, etc.).
             # Bump the failure counter; once it crosses the threshold, push the
