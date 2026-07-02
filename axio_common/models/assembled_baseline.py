@@ -1,9 +1,11 @@
 """
 Per-plate baseline snapshots — full-plate "all 8 channels at zero load" captures
 taken at chip initialization (kind='initialization_assembled' or
-'initialization_unassembled') and post-assembly (kind='assembled') from
-Calibration Setup. Pairs with ForcePlate so drift between manufacturing ->
-initialization -> assembled lifecycle stages is queryable per load cell.
+'initialization_unassembled'), post-assembly (kind='assembled') from
+Calibration Setup, and on demand as a level-surface environment reference
+(kind='global', used for the gbd-* calibration-CSV delta columns). Pairs with
+ForcePlate so drift between manufacturing -> initialization -> assembled
+lifecycle stages is queryable per load cell.
 
 The two initialization kinds split on whether the load cells were already
 mechanically mounted in the plate at the time of chip-init: assembled
@@ -33,6 +35,13 @@ ASSEMBLED_BASELINE_KINDS = (
     'initialization_unassembled',
     'initialization_assembled',
     'assembled',
+    # Device-level environment reference: captured on demand while the plate
+    # sits unweighted on a known-level surface, in the desktop's tare frame
+    # (post apriori-rotation/sign). Calibration captures diff their current
+    # tare against the latest 'global' row to emit the constant gbd-* delta
+    # columns used by environment-conditioned NN training (Neuralizer
+    # USE_BASELINE_DELTA).
+    'global',
 )
 
 
