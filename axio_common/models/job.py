@@ -248,10 +248,31 @@ class Job(Base):
         db.commit()
         db.refresh(run)
 
+    # Cap on the per-run loss sparkline kept in live_progress. Worker pings are
+    # throttled (~10s + edges), so ~120 points comfortably covers a run while
+    # bounding the JSON size.
+    LOSS_HISTORY_CAP = 120
+
     def update_epoch(self, update, db: Session):
         """Refresh live per-epoch progress for the dashboard. No status/Run
         side effects and no-op-safe: a ping for a job that's no longer running
-        (completed/queued in a race) just updates a field the UI ignores."""
+        (completed/queued in a race) just updates a field the UI ignores.
+
+        Also accumulates a capped, per-run loss history ([epoch, loss] pairs) so
+        the dashboard can draw a live loss sparkline — reset whenever the
+        grid-search run changes (each run is a fresh loss curve). The dashboard
+        only polls every few minutes, so this must be accumulated server-side
+        from the individual pings, not on the client."""
+        prev = self.live_progress if isinstance(self.live_progress, dict) else {}
+        same_run = prev.get("run_number") == update.run_number
+        history = prev.get("loss_history") if same_run else None
+        if not isinstance(history, list):
+            history = []
+        if update.loss is not None:
+            history = history + [[update.epoch, round(float(update.loss), 6)]]
+            if len(history) > self.LOSS_HISTORY_CAP:
+                history = history[-self.LOSS_HISTORY_CAP:]
+
         self.live_progress = {
             "run_number": update.run_number,
             "total_runs": update.total_runs,
@@ -262,6 +283,7 @@ class Job(Base):
             "lr": update.lr,
             "elapsed_s": update.elapsed_s,
             "eta_s": update.eta_s,
+            "loss_history": history,
             "updated_at": current_time().isoformat(),
         }
         # Doubles as a heartbeat — a mid-fit run that's actively pinging epochs
