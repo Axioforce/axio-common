@@ -194,6 +194,17 @@ class Job(Base):
             self.hostname = hostname
         db.commit()
 
+        # Deleting a job must not leave one of its runs frozen as a device's
+        # best model. The device best_* pointer is monotonic and never
+        # re-evaluates on deletion, so recompute it from the surviving
+        # (non-deleted) runs whenever a job is deleted.
+        if status == "deleted" and self.device_axf_id:
+            from axio_common.models import Device
+            device = db.query(Device).filter(Device.axf_id == self.device_axf_id).first()
+            if device:
+                device.recompute_best_metrics(db)
+                db.commit()
+
     def start_run(self, run_config: dict, run_number: int):
         """
         Start a new run, updating the progress and initializing run_progress.

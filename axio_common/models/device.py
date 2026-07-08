@@ -169,6 +169,66 @@ class Device(Base):
         else:
             logger.info(f"Run {run_number} did not improve {job.model_type} metrics for device {self.axf_id}")
 
+    def recompute_best_metrics(self, db):
+        """
+        Recompute best_force_* / best_moment_* from scratch over every run that
+        belongs to a NON-deleted job for this device.
+
+        `update_best_metrics` is a monotonic pointer: it only ever overwrites the
+        best when a *better* run completes, and it never re-evaluates when a job
+        (and its runs) is deleted. So a deleted job's run can stay frozen as the
+        device best forever, and a clean re-train can't dislodge it if the deleted
+        run had a lower MAE. This rebuilds the pointer from the surviving runs,
+        using the same metric selection as `update_best_metrics` (TE-all mae,
+        z-axis for force / x-axis for moment). If no eligible run remains for a
+        head, that head's best_* columns are cleared to NULL.
+        """
+        from axio_common.models import Run, Job
+
+        activity, metric = "TE-all", "mae"
+        for model_type, axis in (("force", -1), ("moment", 0)):
+            runs = (
+                db.query(Run)
+                .join(Job, Run.job_id == Job.id)
+                .filter(
+                    Job.device_axf_id == self.axf_id,
+                    Job.model_type == model_type,
+                    Job.status != "deleted",
+                )
+                .all()
+            )
+
+            best_value, best_run = float("inf"), None
+            for run in runs:
+                tm = run.test_metrics or {}
+                block = tm.get(activity) or tm.get("all")
+                if not block or metric not in block:
+                    continue
+                try:
+                    value = block[metric][axis]
+                except (KeyError, IndexError, TypeError):
+                    continue
+                if value < best_value:
+                    best_value, best_run = value, run
+
+            if best_run is None:
+                setattr(self, f"best_{model_type}_run", None)
+                setattr(self, f"best_{model_type}_timestamp", None)
+                setattr(self, f"best_{model_type}_train_metrics", None)
+                setattr(self, f"best_{model_type}_val_metrics", None)
+                setattr(self, f"best_{model_type}_test_metrics", None)
+                logger.info(f"Device {self.axf_id} best {model_type} metrics cleared "
+                            f"(no surviving run with {activity} {metric}).")
+                continue
+
+            setattr(self, f"best_{model_type}_run", best_run.number)
+            setattr(self, f"best_{model_type}_timestamp", best_run.job.timestamp)
+            setattr(self, f"best_{model_type}_train_metrics", best_run.train_metrics)
+            setattr(self, f"best_{model_type}_val_metrics", best_run.val_metrics)
+            setattr(self, f"best_{model_type}_test_metrics", best_run.test_metrics)
+            logger.info(f"Device {self.axf_id} best {model_type} metrics recomputed: "
+                        f"{best_run.job.timestamp}/{best_run.number} ({best_value:.4f}).")
+
     def to_dict(self):
         """
         Convert the device object to a dictionary for Firebase.
