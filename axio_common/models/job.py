@@ -27,6 +27,24 @@ class UpdateJobProgressRequest(BaseModel):
     hostname: str
 
 
+class UpdateJobEpochRequest(BaseModel):
+    """Lightweight, high-frequency live-progress ping sent from the training
+    worker during model.fit() (throttled). Distinct from UpdateJobProgressRequest
+    (which is per grid-search RUN and drives status transitions + Run rows): this
+    only refreshes the Job's live_progress JSON for the dashboard, no side effects."""
+    job_id: str
+    hostname: str
+    run_number: int
+    total_runs: int
+    epoch: int
+    total_epochs: int
+    loss: Optional[float] = None
+    val_loss: Optional[float] = None
+    lr: Optional[float] = None
+    elapsed_s: Optional[float] = None
+    eta_s: Optional[float] = None
+
+
 class JobResponse(BaseModel):
     id: str
     device_axf_id: str
@@ -51,6 +69,7 @@ class JobResponse(BaseModel):
     priority: int = 0
     failure_count: int = 0
     allowed_hostnames: Optional[List[str]] = None
+    live_progress: Optional[dict] = None
 
     class Config:
         from_attributes = True  # Enables SQLAlchemy model compatibility
@@ -94,6 +113,13 @@ class Job(Base):
     # an assignment so the queue logic can push repeat-failers to the back.
     priority = Column(Integer, nullable=False, default=0, server_default="0", index=True)
     failure_count = Column(Integer, nullable=False, default=0, server_default="0")
+
+    # Live per-epoch training progress for the dashboard (refreshed mid-fit by the
+    # worker, throttled). Nullable JSON: {run_number, total_runs, epoch,
+    # total_epochs, loss, val_loss, lr, elapsed_s, eta_s, updated_at}. Cleared
+    # implicitly by status (a queued/completed job's stale progress is ignored by
+    # the UI). Purely informational — never read on the correctness path.
+    live_progress = Column(JSON, nullable=True)
 
     # Restrict which daemons can pick this job up. NULL or empty = any daemon
     # is allowed (the historical behavior). Non-empty list = only daemons whose
@@ -193,6 +219,27 @@ class Job(Base):
         db.commit()
         db.refresh(run)
 
+    def update_epoch(self, update, db: Session):
+        """Refresh live per-epoch progress for the dashboard. No status/Run
+        side effects and no-op-safe: a ping for a job that's no longer running
+        (completed/queued in a race) just updates a field the UI ignores."""
+        self.live_progress = {
+            "run_number": update.run_number,
+            "total_runs": update.total_runs,
+            "epoch": update.epoch,
+            "total_epochs": update.total_epochs,
+            "loss": update.loss,
+            "val_loss": update.val_loss,
+            "lr": update.lr,
+            "elapsed_s": update.elapsed_s,
+            "eta_s": update.eta_s,
+            "updated_at": current_time().isoformat(),
+        }
+        # Doubles as a heartbeat — a mid-fit run that's actively pinging epochs
+        # shouldn't be reaped by the missed-heartbeat monitor.
+        self.last_heartbeat = current_time()
+        db.commit()
+
     def complete_run(self, update, db):
         """
         Complete the current run and log the results.
@@ -289,6 +336,7 @@ class Job(Base):
             "priority": self.priority,
             "failure_count": self.failure_count,
             "allowed_hostnames": list(self.allowed_hostnames) if self.allowed_hostnames else None,
+            "live_progress": self.live_progress,
         }
 
     @classmethod
