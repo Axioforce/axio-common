@@ -2,7 +2,7 @@ import uuid
 
 from pydantic import BaseModel
 from datetime import datetime, timezone
-from sqlalchemy import Column, Index, String, Boolean, DateTime, Float, Integer
+from sqlalchemy import Column, Index, String, Boolean, DateTime, Float, Integer, JSON
 from sqlalchemy.orm import Session
 from typing import Optional, Union, List
 
@@ -24,6 +24,7 @@ class ClientResponse(BaseModel):
     active_jobs: int
     submitted_jobs: int
     max_jobs: Optional[int] = None
+    gpu_stats: Optional[dict] = None
 
     class Config:
         from_attributes = True  # Enables SQLAlchemy model compatibility
@@ -34,6 +35,12 @@ class ClientMaxJobsRequest(BaseModel):
     # None clears the server override → the daemon falls back to its local
     # number_of_simultaneous_jobs. A concurrency cap of 0 pauses fetching.
     max_jobs: Optional[int] = None
+
+
+class ClientTelemetryRequest(BaseModel):
+    hostname: str
+    # {index, total_mb, used_mb, free_mb, util_pct} — training-GPU snapshot.
+    gpu_stats: Optional[dict] = None
 
 
 class Client(Base):
@@ -55,6 +62,10 @@ class Client(Base):
     # this each loop and uses it as its ceiling (live, non-destructive — it
     # never kills jobs already running above the cap).
     max_jobs = Column(Integer, nullable=True)
+    # Latest training-GPU telemetry the daemon reports each loop (dashboard
+    # display only). Nullable JSON: {index, total_mb, used_mb, free_mb,
+    # util_pct}. Freshness is the client's updated_at.
+    gpu_stats = Column(JSON, nullable=True)
 
     def __init__(self, hostname: Optional[str], ip_address: str, daemon: bool):
         """
@@ -161,12 +172,18 @@ class Client(Base):
             "active_jobs": self.active_jobs,
             "submitted_jobs": self.submitted_jobs,
             "max_jobs": self.max_jobs,
+            "gpu_stats": self.gpu_stats,
         }
 
     def set_max_jobs(self, max_jobs: Optional[int], db: Session):
         """Set (or clear, when None) the dashboard concurrency-cap override."""
         self.max_jobs = None if max_jobs is None else max(0, int(max_jobs))
         logger.info(f"Client {self.hostname} max_jobs set to {self.max_jobs}")
+        db.commit()
+
+    def set_gpu_stats(self, gpu_stats, db: Session):
+        """Store the latest training-GPU telemetry reported by the daemon."""
+        self.gpu_stats = gpu_stats
         db.commit()
 
     @classmethod
