@@ -70,6 +70,7 @@ class JobResponse(BaseModel):
     failure_count: int = 0
     allowed_hostnames: Optional[List[str]] = None
     live_progress: Optional[dict] = None
+    failure_reason: Optional[str] = None
 
     class Config:
         from_attributes = True  # Enables SQLAlchemy model compatibility
@@ -121,6 +122,12 @@ class Job(Base):
     # the UI). Purely informational — never read on the correctness path.
     live_progress = Column(JSON, nullable=True)
 
+    # Short human-readable reason the job last failed / was interrupted (exception
+    # type + message + last traceback line, truncated), surfaced on the dashboard
+    # so operators can see WHY without SSHing to a worker. Cleared when a fresh
+    # attempt is assigned. Nullable; purely informational.
+    failure_reason = Column(Text, nullable=True)
+
     # Restrict which daemons can pick this job up. NULL or empty = any daemon
     # is allowed (the historical behavior). Non-empty list = only daemons whose
     # hostname matches one of these can fetch it. Used for targeted
@@ -135,13 +142,24 @@ class Job(Base):
         config = json.loads(self.config)
         self.model_type = config["OUTPUT_TYPE"].split()[0]
 
-    def update_status(self, status: str, db: Session, hostname: str = None):
+    def update_status(self, status: str, db: Session, hostname: str = None,
+                      reason: str = None):
         """
         Update the status of the job and log the change.
+
+        `reason` (optional) records WHY on a 'failed'/'interrupted' transition —
+        a short worker-supplied exception summary shown on the dashboard. It's
+        truncated and cleared when a fresh attempt is assigned so a later success
+        doesn't keep showing a stale error.
         """
         prior_status = self.status
         logger.info(f"Job {self.id} status updated: {prior_status} -> {status}")
         self.status = status
+        if status in ("failed", "interrupted") and reason:
+            self.failure_reason = str(reason)[:2000]
+        elif status == "assigned":
+            # Fresh attempt — drop any prior failure reason.
+            self.failure_reason = None
         if status == "assigned":
             self.assigned_at = current_time()
             self.heartbeat(db)
@@ -337,6 +355,7 @@ class Job(Base):
             "failure_count": self.failure_count,
             "allowed_hostnames": list(self.allowed_hostnames) if self.allowed_hostnames else None,
             "live_progress": self.live_progress,
+            "failure_reason": self.failure_reason,
         }
 
     @classmethod
@@ -398,6 +417,10 @@ class UpdateJobStatusRequest(BaseModel):
     status: str
     timestamp: int
     hostname: str
+    # Why the job reached this status (used for 'failed'/'interrupted'): a short
+    # exception summary the worker classified. Optional so older workers/servers
+    # interoperate (extra field ignored by old servers; absent from old workers).
+    reason: Optional[str] = None
 
 
 class HeartbeatRequest(BaseModel):
