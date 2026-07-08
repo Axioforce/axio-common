@@ -110,7 +110,7 @@ def get_job_by_id(job_id: str, db: Session):
     return job
 
 
-def update_job_status(job, status: str, db: Session, hostname=None):
+def update_job_status(job, status: str, db: Session, hostname=None, reason=None):
     """
         Update the status of a job in the database.
         """
@@ -120,7 +120,7 @@ def update_job_status(job, status: str, db: Session, hostname=None):
         raise ValueError(f"Job with ID {job} not found")
 
     # Update the job's status
-    job.update_status(status, db, hostname)
+    job.update_status(status, db, hostname, reason=reason)
 
     logger.info(f"Job {job.id} status updated to {status}")
     return job
