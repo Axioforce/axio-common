@@ -122,10 +122,12 @@ class Job(Base):
     # the UI). Purely informational — never read on the correctness path.
     live_progress = Column(JSON, nullable=True)
 
-    # Short human-readable reason the job last failed / was interrupted (exception
+    # Short human-readable reason the job LAST failed / was interrupted (exception
     # type + message + last traceback line, truncated), surfaced on the dashboard
-    # so operators can see WHY without SSHing to a worker. Cleared when a fresh
-    # attempt is assigned. Nullable; purely informational.
+    # so operators can see WHY without SSHing to a worker. Retained across
+    # re-assignment so a requeued-and-now-running job still shows why it was
+    # requeued (read alongside failure_count); overwritten by the next failure.
+    # Nullable; purely informational.
     failure_reason = Column(Text, nullable=True)
 
     # Restrict which daemons can pick this job up. NULL or empty = any daemon
@@ -148,18 +150,16 @@ class Job(Base):
         Update the status of the job and log the change.
 
         `reason` (optional) records WHY on a 'failed'/'interrupted' transition —
-        a short worker-supplied exception summary shown on the dashboard. It's
-        truncated and cleared when a fresh attempt is assigned so a later success
-        doesn't keep showing a stale error.
+        a short worker-supplied exception summary shown on the dashboard. It is
+        RETAINED across re-assignment (not cleared), so a job that was
+        interrupted, requeued, and is now running again still shows why it was
+        requeued; the next failure overwrites it.
         """
         prior_status = self.status
         logger.info(f"Job {self.id} status updated: {prior_status} -> {status}")
         self.status = status
         if status in ("failed", "interrupted") and reason:
             self.failure_reason = str(reason)[:2000]
-        elif status == "assigned":
-            # Fresh attempt — drop any prior failure reason.
-            self.failure_reason = None
         if status == "assigned":
             self.assigned_at = current_time()
             self.heartbeat(db)
