@@ -23,9 +23,17 @@ class ClientResponse(BaseModel):
     total_duration: float
     active_jobs: int
     submitted_jobs: int
+    max_jobs: Optional[int] = None
 
     class Config:
         from_attributes = True  # Enables SQLAlchemy model compatibility
+
+
+class ClientMaxJobsRequest(BaseModel):
+    hostname: str
+    # None clears the server override → the daemon falls back to its local
+    # number_of_simultaneous_jobs. A concurrency cap of 0 pauses fetching.
+    max_jobs: Optional[int] = None
 
 
 class Client(Base):
@@ -42,6 +50,11 @@ class Client(Base):
     total_duration = Column(Float, default=0.0)
     active_jobs = Column(Integer, default=0)
     submitted_jobs = Column(Integer, default=0)
+    # Dashboard-controlled concurrency cap. NULL = no override (daemon uses its
+    # local number_of_simultaneous_jobs); 0 = pause fetching. The daemon polls
+    # this each loop and uses it as its ceiling (live, non-destructive — it
+    # never kills jobs already running above the cap).
+    max_jobs = Column(Integer, nullable=True)
 
     def __init__(self, hostname: Optional[str], ip_address: str, daemon: bool):
         """
@@ -146,8 +159,15 @@ class Client(Base):
             "completed_jobs": self.completed_jobs,
             "total_duration": self.total_duration,
             "active_jobs": self.active_jobs,
-            "submitted_jobs": self.submitted_jobs
+            "submitted_jobs": self.submitted_jobs,
+            "max_jobs": self.max_jobs,
         }
+
+    def set_max_jobs(self, max_jobs: Optional[int], db: Session):
+        """Set (or clear, when None) the dashboard concurrency-cap override."""
+        self.max_jobs = None if max_jobs is None else max(0, int(max_jobs))
+        logger.info(f"Client {self.hostname} max_jobs set to {self.max_jobs}")
+        db.commit()
 
     @classmethod
     def from_dict(cls, data):
