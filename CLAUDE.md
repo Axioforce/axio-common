@@ -83,6 +83,11 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   (`queued`→assigned→…), `priority`, `failure_count`, `allowed_hostnames` (targeted-daemon array), heartbeat and
   lifecycle timestamps. Assignment order is `priority DESC, queued_at ASC` (composite indexes defined on the model).
   `Run` cascades delete from `Job`.
+  - ⚠️ **`Job.timestamp` is a `BigInteger`, NOT a datetime.** It's a packed `YYYYMMDDHHMMSS` integer
+    (e.g. `20210101120000`) that also serves as the human-scannable **job UID** — it's the `<timestamp>` segment
+    of the model filename `{axf}-{timestamp}-{run}-{f|m}`. Keep it and surface it **as the integer**; do NOT convert
+    it to/from a `datetime`, unix epoch, or a formatted date string anywhere (API, consumers, or UI). The real
+    lifecycle datetimes are the separate `created_at`/`queued_at`/`assigned_at`/`started_at`/… columns.
 - **`CalibrationBucketSession`** (`calibration_bucket_sessions`) → `CalibrationBucketFile` — one row per
   `<type>/<device>/<date>` bucket session synced from Tigris, with `KIND_TRAIN`/`KIND_TEST`/`KIND_OTHER` files;
   links to `Device` and to a `Calibrator`. `JobBucketSession` is the Job↔BucketSession M2M
