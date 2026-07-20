@@ -1,11 +1,16 @@
 """
-Per-plate baseline snapshots — full-plate "all 8 channels at zero load" captures
+Per-device baseline snapshots — full-device "all channels at zero load" captures
 taken at chip initialization (kind='initialization_assembled' or
 'initialization_unassembled'), post-assembly (kind='assembled') from
 Calibration Setup, and on demand as a level-surface environment reference
-(kind='global', used for the gbd-* calibration-CSV delta columns). Pairs with
-ForcePlate so drift between manufacturing -> initialization -> assembled
-lifecycle stages is queryable per load cell.
+(kind='global', used for the gbd-* calibration-CSV delta columns). For force
+plates this pairs with ForcePlate so drift between manufacturing ->
+initialization -> assembled lifecycle stages is queryable per load cell.
+
+Not plate-exclusive: load-cell DAQ devices (types '05' Load Cells / '14' Load
+Cell v1.2) also persist kind='global' rows so their calibration captures carry
+the same gbd-* environment deltas. Those devices have no ForcePlate row, which
+is why device_axf_id is deliberately NOT a foreign key (see the column comment).
 
 The two initialization kinds split on whether the load cells were already
 mechanically mounted in the plate at the time of chip-init: assembled
@@ -49,7 +54,11 @@ class AssembledBaseline(Base):
     __tablename__ = "assembled_baselines"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    device_axf_id = Column(String, ForeignKey("force_plates.device_axf_id"), nullable=False, index=True)
+    # No FK to force_plates: load-cell devices (types '05'/'14') push 'global'
+    # baselines without ever having a force_plates row. The plate relationship
+    # below is joined explicitly instead (FK constraint dropped in axio-server
+    # migration f7a1c5d2e8b9).
+    device_axf_id = Column(String, nullable=False, index=True)
     device_type_id = Column(String, nullable=False)
     # 'initialization_unassembled' | 'initialization_assembled' | 'assembled'
     kind = Column(String, nullable=False)
@@ -60,7 +69,13 @@ class AssembledBaseline(Base):
     # cross-referencing external logs.
     config_snapshot = Column(JSON, nullable=True)
 
-    force_plate = relationship("ForcePlate", back_populates="assembled_baselines")
+    # Explicit join because device_axf_id is not a FK — None for load-cell
+    # devices, which have no force_plates row.
+    force_plate = relationship(
+        "ForcePlate",
+        primaryjoin="foreign(AssembledBaseline.device_axf_id) == ForcePlate.device_axf_id",
+        back_populates="assembled_baselines",
+    )
     sensors = relationship(
         "AssembledBaselineSensor",
         back_populates="baseline",

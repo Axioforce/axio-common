@@ -75,8 +75,11 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   provenance), `LoadCellNote`, `Baseline`→`BaselineSensor` (per-cell baseline captures).
 - **`ForcePlate`** (`force_plates`, PK `device_axf_id`) — four corner load-cell slots
   (front/rear × left/right, `CORNER_POSITIONS`). History tables `ForcePlateAssignmentHistory` (cell
-  reassignments) and `ForcePlateAssembledDateHistory`. Children `AssembledBaseline`→`AssembledBaselineSensor`
-  (`ASSEMBLED_BASELINE_KINDS`) hold the assembled-plate baseline.
+  reassignments) and `ForcePlateAssembledDateHistory`. `AssembledBaseline`→`AssembledBaselineSensor`
+  (`ASSEMBLED_BASELINE_KINDS`) hold per-device baseline snapshots. `assembled_baselines.device_axf_id` is
+  deliberately **not** a FK to `force_plates` — load-cell DAQ devices (types `05`/`14`) push `kind='global'`
+  baselines without a plate row; the ForcePlate↔AssembledBaseline relationship uses an explicit `foreign()`
+  join and still ORM-cascades on plate delete.
 - **`Device`** (`devices`, PK `axf_id`) — the trainable unit; `type_id`/`type_name`, best-force/best-moment run
   pointers + metrics (JSON), anomaly counters. One Device → many `Job`s.
 - **`Job`** (`jobs`, PK uuid) → **`Run`** (`runs`) — the NN training job queue. Job carries `status`

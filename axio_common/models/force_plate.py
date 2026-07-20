@@ -64,8 +64,13 @@ class ForcePlate(Base):
         cascade="all, delete-orphan",
         lazy="select",
     )
+    # Explicit join: assembled_baselines.device_axf_id is deliberately not a
+    # FK (load-cell devices push 'global' baselines with no force_plates row),
+    # so annotate the join column with foreign() here. Cascade still applies —
+    # deleting a plate deletes its baseline snapshots at the ORM level.
     assembled_baselines = relationship(
         "AssembledBaseline",
+        primaryjoin="ForcePlate.device_axf_id == foreign(AssembledBaseline.device_axf_id)",
         back_populates="force_plate",
         cascade="all, delete-orphan",
         lazy="select",
