@@ -15,7 +15,7 @@ reprocessing flow to re-score a session against a different model.
 import uuid
 from sqlalchemy import (
     Column, BigInteger, Integer, String, Boolean, Float,
-    DateTime, ForeignKey, Index,
+    DateTime, ForeignKey, Index, text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -38,6 +38,11 @@ class LiveTestSession(Base):
 
     device_id = Column(String, nullable=False, index=True)
     device_type = Column(String, nullable=False, index=True)
+    # Which live-test procedure produced this session: 'classic' (6-stage)
+    # or 'blind' (12-stage, two blinded passes). Null on rows saved before
+    # the column existed — those may be either; FluxLite treats null as
+    # classic (`mode ?? 'classic'`).
+    mode = Column(String, nullable=True)
     model_id = Column(String, nullable=False)
     tester_name = Column(String, nullable=False)
     body_weight_n = Column(Float, nullable=False)
@@ -67,6 +72,12 @@ class LiveTestSession(Base):
     )
     reprocessed_at = Column(DateTime(timezone=True), nullable=True)
 
+    # FluxLite "experimental mode": sessions captured — or reprocessed —
+    # while experimenting with calibrations/models. Excluded from production
+    # session lists and aggregate stats unless a client explicitly asks for
+    # them (DashboardFilters.experimentalFilter on the /live-test routes).
+    experimental = Column(Boolean, nullable=False, default=False, server_default=text('false'))
+
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     cells = relationship(
@@ -93,6 +104,10 @@ class LiveTestCell(Base):
     stage_name = Column(String, nullable=False)
     stage_type = Column(String, nullable=False)
     stage_location = Column(String, nullable=False)
+    # 1 or 2 — which pass of the (location, type) pair this stage belongs
+    # to (Blind runs every stage twice; Classic is always pass 1). Null on
+    # rows saved before the column existed; FluxLite falls back to 1.
+    stage_pass = Column(Integer, nullable=True)
     target_n = Column(Float, nullable=False)
     tolerance_n = Column(Float, nullable=False)
 
