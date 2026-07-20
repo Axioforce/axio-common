@@ -15,7 +15,7 @@ reprocessing flow to re-score a session against a different model.
 import uuid
 from sqlalchemy import (
     Column, BigInteger, Integer, String, Boolean, Float,
-    DateTime, ForeignKey, Index,
+    DateTime, ForeignKey, Index, text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -66,6 +66,12 @@ class LiveTestSession(Base):
         nullable=True, index=True,
     )
     reprocessed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # FluxLite "experimental mode": sessions captured — or reprocessed —
+    # while experimenting with calibrations/models. Excluded from production
+    # session lists and aggregate stats unless a client explicitly asks for
+    # them (DashboardFilters.experimentalFilter on the /live-test routes).
+    experimental = Column(Boolean, nullable=False, default=False, server_default=text('false'))
 
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
