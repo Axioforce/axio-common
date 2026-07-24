@@ -1,6 +1,6 @@
 [project]
 name = "axio_common"
-version = "0.50.0"
+version = "0.51.0"
 description = "Shared models and utilities for Axio backend services."
 authors = [{ name = "Stephen Houston", email = "stephen.houston@axioforce.com" }]
 dependencies = [
