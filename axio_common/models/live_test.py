@@ -62,6 +62,14 @@ class LiveTestSession(Base):
     # saves successfully.
     raw_object_key = Column(String, nullable=True)
 
+    # Effective raw-data rate in Hz, measured by FluxLite from the raw
+    # windows' frame timestamps at save time (e.g. ~1000 for the 1 kHz
+    # pipeline, ~100 for older captures). Reprocessed sessions inherit the
+    # original's rate (same raw). Null on rows saved before the column
+    # existed or when raw streaming was off — estimable from app_version
+    # (v1.10.1+ ≈ 100 Hz, v1.12.0+ ≈ 1 kHz) or the raw CSV itself.
+    sample_rate_hz = Column(Float, nullable=True)
+
     # Lineage for sessions created by FluxLite's reprocess flow: id of the
     # original session whose raw data was re-scored, plus when the reprocess
     # ran. Both null on directly-captured sessions.
