@@ -112,6 +112,17 @@ class CalibrationBucketSession(Base):
     # the file didn't enumerate any activity lines.
     expected_activities = Column(JSON, nullable=True)
 
+    # High-water marks for out-of-band deletion detection. bucket_sync recomputes
+    # total_files/total_bytes each cycle from the live bucket, so a deletion makes
+    # those *shrink* and the evidence self-heals. These columns only ever increase
+    # (running max), so the reconciliation pass can spot total_files < max_total_files
+    # (objects vanished) even after the bucket was walked post-deletion.
+    # reconcile_flagged_at is stamped when unexplained shrinkage is first detected,
+    # so the alert fires once rather than every sync cycle.
+    max_total_files = Column(Integer, nullable=False, default=0, server_default="0")
+    max_total_bytes = Column(BigInteger, nullable=False, default=0, server_default="0")
+    reconcile_flagged_at = Column(DateTime(timezone=True), nullable=True)
+
     created_at = Column(DateTime(timezone=True), nullable=False, default=current_time)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=current_time, onupdate=current_time)
 
