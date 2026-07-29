@@ -44,6 +44,24 @@ Resulting layout:
 
 `models/` is mirrored verbatim — no date or extension transforms.
 
+### Mapping a cache path back to a bucket key (recovery / backfill)
+
+`cache_path_for_key()` maps bucket→cache; its exact inverse is
+`bucket_key_for_cache_path()` (cache→bucket: dotted date→ISO, drop the
+`calibration_data/` layer, restore `.csv.gz`). **Always use it — never upload a
+cache path verbatim as a bucket key.** A raw cache path carries the dotted date
+and the cache-only `calibration_data/` segment; those keys are non-canonical and
+`bucket_sync` **skips** them (it only indexes ISO date dirs), so the session
+silently disappears from the dashboard/Submit page even though bytes are in the
+bucket. This is exactly the 2026-07 restore incident (devices 15/16).
+
+Guardrail: `upload_file()` and `presigned_put_url()` call `_assert_canonical_key()`,
+which **rejects** an input-session key containing `calibration_data/` or a
+non-ISO date directory — so a hand-rolled raw upload now fails loudly instead of
+corrupting the index. To recover cached calibration data into the bucket, run
+`AxioforceNeuralizer/sync_cache_to_tigris.py` (which uses the shared inverse), or
+call `bucket_key_for_cache_path()` yourself — never a verbatim cache-path PUT.
+
 ## End-to-end flow
 
 The cache plays two roles at once: **upload staging** for the DAQ side,
