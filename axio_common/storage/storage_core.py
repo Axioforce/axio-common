@@ -294,6 +294,84 @@ def local_session_dir(
     return root / device_type(device_id) / device_id / _dotted_from_iso(iso_date)
 
 
+# Whole-segment dotted date ('07.27.2026'); deliberately anchored so a filename
+# like '..._07.27.2026.csv.gz' (one segment with a prefix) is NOT matched.
+DOTTED_DATE_RE = re.compile(r"^\d{1,2}\.\d{1,2}\.\d{4}$")
+
+
+def _iso_from_dotted(dotted: str) -> str:
+    """'07.27.2026' (MM.DD.YYYY) -> '2026-07-27'. Inverse of _dotted_from_iso."""
+    m, d, y = dotted.split(".")
+    return f"{y}-{int(m):02d}-{int(d):02d}"
+
+
+def bucket_key_for_cache_path(cache_path, cache_root: Path | None = None) -> str:
+    """Map a local cache path back to its bucket key — the exact inverse of
+    ``cache_path_for_key``. Reverses the cache's layout transforms:
+
+      - the session **date directory** dotted ('07.27.2026') -> ISO
+        ('2026-07-27') — only the ``<type>/<device>/<date>/`` segment, never a
+        date embedded in a filename;
+      - the cache-only ``calibration_data/`` layer between the date and
+        {train,test} is removed;
+      - a gunzipped ``.csv`` input file gets its bucket ``.csv.gz`` extension
+        back.
+
+    The ``models/`` subtree and ``tests.txt`` are mirrored verbatim (models keep
+    their dotted-date dirs — that matches the bucket). **Always use this for a
+    cache -> bucket upload/restore** instead of using a cache path as a key
+    directly (the latter leaks 'calibration_data/' + dotted dates into the
+    bucket and de-syncs the session index; `upload_file`/`presigned_put_url`
+    reject such keys — see `_assert_canonical_key`).
+    """
+    root = Path(cache_root) if cache_root else DEFAULT_CACHE_ROOT
+    p = Path(cache_path).expanduser()
+    try:
+        rel = p.resolve().relative_to(root.expanduser().resolve())
+        parts = list(rel.as_posix().split("/"))
+    except ValueError:
+        # Not under the cache root — treat the input as an already-relative path.
+        parts = list(Path(cache_path).as_posix().split("/"))
+    # 1) session date dir (index 2): dotted -> ISO. 'models' and anything that
+    #    isn't a whole-segment dotted date are left untouched, so the models
+    #    subtree stays verbatim.
+    if len(parts) >= 3 and DOTTED_DATE_RE.match(parts[2]):
+        parts[2] = _iso_from_dotted(parts[2])
+    # 2) drop the cache-only 'calibration_data/' layer for input files.
+    if len(parts) >= 5 and parts[3] == "calibration_data" and parts[4] in ("train", "test"):
+        del parts[3]
+        # 3) restore the .csv.gz extension a gunzipped cache file lost.
+        if parts[-1].endswith(".csv"):
+            parts[-1] = parts[-1] + ".gz"
+    return "/".join(parts)
+
+
+def _assert_canonical_key(key: str) -> None:
+    """Guard against uploading a **cache-shaped** path as a bucket key.
+
+    The bucket layout is ``<type>/<device>/<iso-date>/{train,test}/<file>`` — no
+    ``calibration_data/`` layer, ISO (not dotted) session dates. A cache path
+    used verbatim as a key violates both and silently de-syncs the session index
+    (bucket_sync skips non-ISO date dirs). Callers must map via
+    ``bucket_key_for_cache_path`` first. Raises ValueError on a non-canonical
+    input-session key; models/tests.txt/other prefixes are unaffected.
+    """
+    parts = key.split("/")
+    if "calibration_data" in parts:
+        raise ValueError(
+            f"Refusing non-canonical bucket key (cache-only 'calibration_data/' "
+            f"segment present): {key!r}. Map cache paths with "
+            f"bucket_key_for_cache_path() before uploading."
+        )
+    # Input-session file: <type>/<device>/<date>/{train,test}/<file>
+    if len(parts) >= 5 and parts[3] in ("train", "test") and not ISO_DATE_RE.match(parts[2]):
+        raise ValueError(
+            f"Refusing non-canonical bucket key (session date {parts[2]!r} is not "
+            f"ISO YYYY-MM-DD): {key!r}. Map cache paths with "
+            f"bucket_key_for_cache_path() before uploading."
+        )
+
+
 # ---------- listing ----------
 
 def list_prefix(prefix: str, recursive: bool = True) -> list[str]:
@@ -665,6 +743,7 @@ def upload_file(
         PUT URL, then PUTs the body straight to Tigris over that URL. The
         bucket secret never leaves axio-server.
     """
+    _assert_canonical_key(key)
     _maybe_run_cache_gc()
     local = Path(local_path)
 
@@ -740,6 +819,7 @@ def upload_session_files(
 # ---------- presigned URLs ----------
 
 def presigned_put_url(key: str, expires_in: int = 3600) -> str:
+    _assert_canonical_key(key)
     return _client_singleton().generate_presigned_url(
         "put_object", Params={"Bucket": _bucket(), "Key": key}, ExpiresIn=expires_in
     )
