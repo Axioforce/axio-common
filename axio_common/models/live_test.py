@@ -14,7 +14,7 @@ reprocessing flow to re-score a session against a different model.
 
 import uuid
 from sqlalchemy import (
-    Column, BigInteger, Integer, String, Boolean, Float,
+    Column, BigInteger, Integer, String, Text, Boolean, Float,
     DateTime, ForeignKey, Index, text,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -85,6 +85,15 @@ class LiveTestSession(Base):
     # session lists and aggregate stats unless a client explicitly asks for
     # them (DashboardFilters.experimentalFilter on the /live-test routes).
     experimental = Column(Boolean, nullable=False, default=False, server_default=text('false'))
+
+    # Free-text operator note for the session: setup context captured before
+    # the test (mount, dumbbell, why this run) plus observations appended at
+    # the summary. Mutable after save via PATCH /live-test/sessions/{id}.
+    # Reprocessed sessions inherit the original's note as an editable copy.
+    # Null when the operator left it blank — FluxLite normalizes
+    # whitespace-only input to null so "has a note" stays a clean boolean.
+    # Unbounded Text on purpose: a note is more useful intact than truncated.
+    notes = Column(Text, nullable=True)
 
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
