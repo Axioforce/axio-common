@@ -28,6 +28,9 @@ TYPE_ID_NAME_MAP = {
     "11": "Launch Pad v1.2",
     "12": "Launch Pad XL v1.2",
     "13": "Robotic Skin",
+    "14": "Load Cells v1.2",
+    "15": "Force Pedal - Left",
+    "16": "Force Pedal - Right",
     "af": "Axiocell",
 }
 
