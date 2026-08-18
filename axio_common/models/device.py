@@ -50,6 +50,7 @@ class DeviceResponse(BaseModel):
     #  "reason": str|None} entries — every edit appends one row.
     assembled_date: Optional[datetime] = None
     assembled_date_history: Optional[list] = None
+    size: Optional[str] = None
     best_force_run: Optional[int] = None
     best_force_timestamp: Optional[int] = None
     best_force_train_metrics: Optional[dict] = None
@@ -86,6 +87,18 @@ class Device(Base):
     # are tracked in assembled_date_history (JSON list, append-only).
     assembled_date = Column(DateTime(timezone=True), nullable=True)
     assembled_date_history = Column(JSON, nullable=True)
+    # Physical size of the unit. Insole-only in practice (EU shoe size, e.g.
+    # "41"); NULL for force plates and load cells. String, not Integer, to match
+    # CalibrationBucketSession.size — that field already allows "10.5" and
+    # "M9/W10.5", and a second, narrower convention for the same quantity would
+    # only invite conversion bugs. Sourced from the DAQ at calibration-session
+    # start (size is required there for insoles) and backfilled for units that
+    # predate that field.
+    #
+    # NOTE: a 09 (left) and 0a (right) sharing an ID suffix are NOT a pair —
+    # left and right are manufactured and numbered independently, in build
+    # order. Differing sizes at the same suffix are expected, not a data error.
+    size = Column(String, nullable=True)
     best_force_run = Column(Integer, nullable=True)
     best_force_timestamp = Column(BigInteger, nullable=True)
     best_force_train_metrics = Column(JSON, nullable=True)
@@ -246,6 +259,7 @@ class Device(Base):
             "updated_at": self.updated_at,
             "assembled_date": self.assembled_date,
             "assembled_date_history": self.assembled_date_history,
+            "size": self.size,
             "best_force_run": self.best_force_run,
             "best_force_timestamp": self.best_force_timestamp,
             "best_force_train_metrics": self.best_force_train_metrics,
