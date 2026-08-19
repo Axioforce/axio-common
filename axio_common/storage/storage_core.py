@@ -747,6 +747,53 @@ def download_session(
 
 # ---------- upload ----------
 
+def upload_bytes(
+    key: str,
+    data: bytes,
+    *,
+    content_type: str = "application/octet-stream",
+) -> str:
+    """Upload in-memory bytes to a bucket key. Returns the key.
+
+    The public counterpart to ``upload_file`` for callers that generate a body
+    rather than read one off disk (e.g. axio-server rendering a shipping PDF).
+    Use this instead of reaching for ``_client_singleton()``/``_bucket()``:
+    those are private to this module and are NOT re-exported by
+    ``axio_common.storage`` (``from .storage_core import *`` skips
+    underscore-prefixed names), so touching them from another package raises
+    AttributeError at runtime.
+
+    Backend selection mirrors ``upload_file``:
+      - S3 backend (creds present): boto3 puts the body directly to Tigris.
+      - Server-mediated backend (no creds): asks axio-server for a presigned
+        PUT URL, then PUTs the body over that URL.
+
+    No cache bookkeeping — there is no local file to mark verified.
+    """
+    _assert_canonical_key(key)
+
+    if _use_server_backend():
+        info = _server_post_json(
+            "/storage/presigned-upload-by-key",
+            {"key": key, "expires_in": 3600},
+        )
+        put_req = urllib.request.Request(
+            info["url"],
+            data=data,
+            method="PUT",
+            headers={"Content-Type": content_type},
+        )
+        # One-shot PUT, no retry inside; failure bubbles to the caller.
+        with urllib.request.urlopen(put_req, timeout=300) as resp:
+            resp.read()  # drain
+        return key
+
+    _client_singleton().put_object(
+        Bucket=_bucket(), Key=key, Body=data, ContentType=content_type,
+    )
+    return key
+
+
 def upload_file(
     local_path: str | Path,
     key: str,
