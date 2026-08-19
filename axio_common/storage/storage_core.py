@@ -455,25 +455,47 @@ class SessionListing:
         return keys
 
 
+def is_folder_marker(key: str) -> bool:
+    """True for a zero-byte 'directory' object — a key ending in '/'.
+
+    Some S3 browsers create these to make an empty prefix visible. They are
+    prefixes, not files, and must never reach a caller that treats a listing
+    as a list of readable files: a marker under train/ becomes a *directory*
+    path in a job's TRAIN_INPUT_DIR, and pandas.read_csv on a directory
+    raises PermissionError (errno 13) on Windows — which the Neuralizer's
+    read-retry loop reads as a cloud-sync stall and burns its whole timeout
+    on before killing the job.
+    """
+    return key.endswith("/")
+
+
 def list_session(device_id: str, date: str) -> SessionListing:
-    """All keys under one (device, date) session, split by kind."""
+    """All keys under one (device, date) session, split by kind.
+
+    Zero-byte folder markers are dropped — see is_folder_marker().
+    """
     if _use_server_backend():
         from urllib.parse import quote
         data = _server_get_json(
             f"/storage/sessions/{quote(device_id)}/{quote(date)}"
         )
+        # Filter here too: an older deployed server may not have this fix yet.
+        def _clean(v):
+            return sorted(k for k in (v or []) if not is_folder_marker(k))
         return SessionListing(
-            train=sorted(data.get("train", []) or []),
-            test=sorted(data.get("test", []) or []),
+            train=_clean(data.get("train")),
+            test=_clean(data.get("test")),
             tests_txt=data.get("tests_txt"),
             # Server doesn't surface 'other' yet; keep it empty when missing.
-            other=sorted(data.get("other", []) or []),
+            other=_clean(data.get("other")),
         )
     keys = list_prefix(session_prefix(device_id, date), recursive=True)
     train, test, other = [], [], []
     tests_txt: Optional[str] = None
     base = session_prefix(device_id, date)
     for k in keys:
+        if is_folder_marker(k):
+            continue
         rel = k.removeprefix(base)
         if rel.startswith("train/"):
             train.append(k)
