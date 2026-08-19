@@ -55,12 +55,23 @@ and the cache-only `calibration_data/` segment; those keys are non-canonical and
 silently disappears from the dashboard/Submit page even though bytes are in the
 bucket. This is exactly the 2026-07 restore incident (devices 15/16).
 
-Guardrail: `upload_file()` and `presigned_put_url()` call `_assert_canonical_key()`,
+Guardrail: `upload_file()`, `upload_bytes()` and `presigned_put_url()` call `_assert_canonical_key()`,
 which **rejects** an input-session key containing `calibration_data/` or a
 non-ISO date directory — so a hand-rolled raw upload now fails loudly instead of
 corrupting the index. To recover cached calibration data into the bucket, run
 `AxioforceNeuralizer/sync_cache_to_tigris.py` (which uses the shared inverse), or
 call `bucket_key_for_cache_path()` yourself — never a verbatim cache-path PUT.
+
+## Public API only — the underscored helpers are not importable
+
+`axio_common/storage/__init__.py` re-exports this module with
+`from .storage_core import *`, and `import *` **skips underscore-prefixed
+names**. `storage._client_singleton()` and `storage._bucket()` therefore do not
+exist on the `axio_common.storage` namespace: reaching for them from another
+package raises `AttributeError` at call time, not import time, so the failure
+only shows up in production on the first request that needs it (that is exactly
+how axio-server's packing-list endpoint broke). Upload in-memory bodies with
+`upload_bytes(key, data, content_type=...)` and files with `upload_file()`.
 
 ## End-to-end flow
 
