@@ -76,7 +76,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Optional, Sequence
+from typing import Callable, Iterable, Mapping, Optional, Sequence
 
 import boto3
 from botocore.client import Config
@@ -599,7 +599,163 @@ def _transfer_with_retry(do_transfer: Callable[[], None], tmp: Path) -> None:
             time.sleep(_TRANSFER_BACKOFF_BASE * (2 ** (attempt - 1)))
 
 
-def ensure_local(key: str, cache_root: Path | None = None) -> Path:
+# ---------- byte-level progress ----------
+#
+# `on_bytes` is the fine-grained companion to `download_files`' file-level
+# `progress` callback. A session is often a handful of files where one is
+# enormous (an axiosaurus_positions capture is easily hundreds of MB), so a
+# files-completed counter can sit still for minutes and look hung. `on_bytes`
+# reports transfer as it happens.
+#
+# Signature: on_bytes(key, delta, total, cached)
+#
+#   delta=None, total=N     declare/reset: `key`'s transferred count is 0 and
+#                           its wire size is N bytes (None when unknown). Sent
+#                           once before a transfer starts and again on each
+#                           retry, so a restarted download can't over-count.
+#   delta=D,    total=N     D more bytes of `key` arrived.
+#   cached=True             `key` was already local; nothing will transfer.
+#                           Renderers should drop it from the byte denominator
+#                           (the file-level `progress` callback still counts it).
+#
+# Byte counts are *wire* bytes: for a .csv.gz key that's the compressed size,
+# which is also what the bucket LIST reports, so pre-seeded totals and observed
+# deltas are in the same units. Callbacks fire from `download_files`' worker
+# threads - renderers must be thread-safe. Exceptions raised by a callback are
+# swallowed: a broken progress display must never fail a download.
+ByteProgress = Callable[[str, Optional[int], Optional[int], bool], None]
+
+_PROGRESS_CHUNK = 1024 * 1024
+
+
+def _emit_bytes(
+    on_bytes: "ByteProgress | None",
+    key: str,
+    delta: Optional[int],
+    total: Optional[int],
+    cached: bool = False,
+) -> None:
+    if on_bytes is None:
+        return
+    try:
+        on_bytes(key, delta, total, cached)
+    except Exception:
+        pass
+
+
+def _copy_with_progress(
+    src,
+    dst,
+    on_bytes: "ByteProgress | None",
+    key: str,
+    total: Optional[int],
+) -> None:
+    """copyfileobj that reports each chunk. Plain copyfileobj when unobserved."""
+    if on_bytes is None:
+        shutil.copyfileobj(src, dst, length=_PROGRESS_CHUNK)
+        return
+    while True:
+        chunk = src.read(_PROGRESS_CHUNK)
+        if not chunk:
+            return
+        dst.write(chunk)
+        _emit_bytes(on_bytes, key, len(chunk), total)
+
+
+class _CountingStream:
+    """Read-only passthrough that reports every byte read.
+
+    Lets a .csv.gz key be decompressed *straight off the wire* -
+    gzip.GzipFile(fileobj=...) only needs read() - while still counting the
+    compressed bytes for progress. The alternative (buffer the whole body, then
+    gunzip it) held a 360 MB capture in RAM, and twice that if the buffer was
+    copied.
+    """
+
+    def __init__(self, src, on_bytes: "ByteProgress | None", key: str, total: Optional[int]):
+        self._src = src
+        self._on_bytes = on_bytes
+        self._key = key
+        self._total = total
+
+    def read(self, size: int = -1) -> bytes:
+        chunk = self._src.read(size)
+        if chunk:
+            _emit_bytes(self._on_bytes, self._key, len(chunk), self._total)
+        return chunk
+
+    def readable(self) -> bool:
+        return True
+
+    def close(self) -> None:
+        close = getattr(self._src, "close", None)
+        if close is not None:
+            close()
+
+
+def _content_length(resp) -> Optional[int]:
+    try:
+        n = resp.headers.get("Content-Length")
+        return int(n) if n is not None else None
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def object_size(key: str) -> Optional[int]:
+    """Wire size of a single key in bytes, or None if it can't be determined.
+
+    Best-effort: the server-mediated backend has no HEAD equivalent, so it
+    returns None there and callers fall back to the Content-Length of the
+    download itself.
+    """
+    if _use_server_backend():
+        return None
+    try:
+        return int(_client_singleton().head_object(Bucket=_bucket(), Key=key)["ContentLength"])
+    except Exception:
+        return None
+
+
+def list_prefix_sizes(prefix: str) -> dict[str, int]:
+    """{key: size_in_bytes} for every object under a prefix (recursive).
+
+    Free next to list_prefix() - list_objects_v2 already returns Size, we just
+    normally throw it away. S3 backend only; see session_sizes().
+    """
+    s3 = _client_singleton()
+    out: dict[str, int] = {}
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=_bucket(), Prefix=prefix):
+        for obj in page.get("Contents", []):
+            if is_folder_marker(obj["Key"]):
+                continue
+            out[obj["Key"]] = int(obj["Size"])
+    return out
+
+
+def session_sizes(device_id: str, date: str) -> dict[str, int]:
+    """{key: size} for one session, or {} when sizes aren't available.
+
+    Lets a progress renderer know a session's total download size before the
+    first byte arrives. Returns {} on the server-mediated backend (the
+    /storage/sessions endpoint returns keys only) and on any listing error -
+    an empty map means "unknown", never "empty session".
+    """
+    if _use_server_backend():
+        return {}
+    try:
+        return list_prefix_sizes(session_prefix(device_id, date))
+    except Exception:
+        return {}
+
+
+def ensure_local(
+    key: str,
+    cache_root: Path | None = None,
+    *,
+    on_bytes: "ByteProgress | None" = None,
+    size_hint: Optional[int] = None,
+) -> Path:
     """Download key to cache if not already present. Returns the local Path.
 
     .csv.gz keys are decompressed on the way in so the local file ends in plain
@@ -609,6 +765,11 @@ def ensure_local(key: str, cache_root: Path | None = None) -> Path:
     Backend dispatch: with AWS creds set, pulls from Tigris directly via
     boto3. Without creds, asks axio-server for a presigned URL and GETs the
     bytes from Tigris through it (no proxy load on axio-server itself).
+
+    on_bytes:   optional byte-level progress callback - see ByteProgress above.
+    size_hint:  this key's wire size, if the caller already knows it (e.g. from
+                a bucket LIST). Saves a HEAD round-trip per file; only consulted
+                when on_bytes is set.
     """
     _maybe_run_cache_gc()
     _eff_root = cache_root if cache_root is not None else DEFAULT_CACHE_ROOT
@@ -617,9 +778,15 @@ def ensure_local(key: str, cache_root: Path | None = None) -> Path:
         # Cache hit: re-stamp so recency tracks real use (GC's in-flight floor),
         # and keep the verification sidecar in step.
         _cache_gc.mark_used(local, _eff_root)
+        _emit_bytes(on_bytes, key, None, None, cached=True)
         return local
     local.parent.mkdir(parents=True, exist_ok=True)
     tmp = local.with_suffix(local.suffix + ".part")
+
+    # Only pay for the HEAD when someone is watching and hasn't told us the size.
+    total = size_hint
+    if on_bytes is not None and total is None:
+        total = object_size(key)
 
     if _use_server_backend():
         # Server-mediated: small POST for the URL, then a direct GET to
@@ -630,14 +797,22 @@ def ensure_local(key: str, cache_root: Path | None = None) -> Path:
         url = info["url"]
 
         def _server_transfer() -> None:
+            # Reset before every attempt: _transfer_with_retry re-runs this
+            # closure from scratch, so bytes from a failed attempt must not
+            # accumulate.
+            _emit_bytes(on_bytes, key, None, total)
             if key.endswith(".csv.gz"):
                 with urllib.request.urlopen(url, timeout=300) as resp:
-                    body = resp.read()
-                with gzip.GzipFile(fileobj=io.BytesIO(body)) as gz, open(tmp, "wb") as dst:
-                    shutil.copyfileobj(gz, dst, length=1024 * 1024)
+                    src = _CountingStream(
+                        resp, on_bytes, key, _content_length(resp) or total,
+                    )
+                    with gzip.GzipFile(fileobj=src) as gz, open(tmp, "wb") as dst:
+                        shutil.copyfileobj(gz, dst, length=1024 * 1024)
             else:
                 with urllib.request.urlopen(url, timeout=300) as resp, open(tmp, "wb") as dst:
-                    shutil.copyfileobj(resp, dst, length=1024 * 1024)
+                    _copy_with_progress(
+                        resp, dst, on_bytes, key, _content_length(resp) or total,
+                    )
 
         _transfer_with_retry(_server_transfer, tmp)
         tmp.replace(local)
@@ -647,12 +822,22 @@ def ensure_local(key: str, cache_root: Path | None = None) -> Path:
     s3 = _client_singleton()
 
     def _s3_transfer() -> None:
+        _emit_bytes(on_bytes, key, None, total)  # reset per attempt (see above)
         if key.endswith(".csv.gz"):
-            body = s3.get_object(Bucket=_bucket(), Key=key)["Body"].read()
-            with gzip.GzipFile(fileobj=io.BytesIO(body)) as gz, open(tmp, "wb") as dst:
+            resp = s3.get_object(Bucket=_bucket(), Key=key)
+            src = _CountingStream(
+                resp["Body"], on_bytes, key, resp.get("ContentLength") or total,
+            )
+            with gzip.GzipFile(fileobj=src) as gz, open(tmp, "wb") as dst:
                 shutil.copyfileobj(gz, dst, length=1024 * 1024)
         else:
-            s3.download_file(_bucket(), key, str(tmp))
+            # boto3's Callback gets a per-chunk delta, which is exactly what
+            # on_bytes wants - including across its multipart worker threads.
+            cb = None
+            if on_bytes is not None:
+                def cb(delta: int) -> None:  # noqa: F811
+                    _emit_bytes(on_bytes, key, delta, total)
+            s3.download_file(_bucket(), key, str(tmp), Callback=cb)
 
     _transfer_with_retry(_s3_transfer, tmp)
     tmp.replace(local)
@@ -665,6 +850,8 @@ def download_files(
     cache_root: Path | None = None,
     *,
     progress: Callable[[int, int, Optional[str]], None] | None = None,
+    on_bytes: "ByteProgress | None" = None,
+    sizes: "Mapping[str, int] | None" = None,
     workers: int = 8,
 ) -> list[Path]:
     """ensure_local() each key in parallel, return local paths in listing order.
@@ -680,9 +867,23 @@ def download_files(
     progress: optional callable(idx, total, key). Fires AFTER each completion
               with idx = number of files completed so far and key = the file
               just completed. The final tick is progress(total, total, None).
+    on_bytes: optional byte-level callback (see ByteProgress) - fires DURING
+              each transfer, so a single huge file still shows movement. Called
+              from the worker threads, so it must be thread-safe.
+    sizes:    optional {key: wire size} map (e.g. from session_sizes()), passed
+              through as each ensure_local's size_hint so an observed batch
+              doesn't issue a HEAD per file.
     workers:  thread pool size. Default 8. Set to 1 to disable parallelism
               (deterministic ordering, easier debugging).
     """
+    def _fetch(k: str) -> Path:
+        return ensure_local(
+            k,
+            cache_root,
+            on_bytes=on_bytes,
+            size_hint=(sizes or {}).get(k),
+        )
+
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     n = len(keys)
@@ -695,7 +896,7 @@ def download_files(
 
     if workers <= 1 or n == 1:
         for i, k in enumerate(keys):
-            paths[i] = ensure_local(k, cache_root)
+            paths[i] = _fetch(k)
             if progress:
                 progress(i + 1, n, k)
         if progress:
@@ -705,7 +906,7 @@ def download_files(
     completed = 0
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futures = {
-            ex.submit(ensure_local, k, cache_root): (i, k)
+            ex.submit(_fetch, k): (i, k)
             for i, k in enumerate(keys)
         }
         for fut in as_completed(futures):
@@ -727,6 +928,7 @@ def download_session(
     cache_root: Path | None = None,
     *,
     progress: Callable[[int, int, Optional[str]], None] | None = None,
+    on_bytes: "ByteProgress | None" = None,
     workers: int = 8,
 ) -> Path:
     """Download every file in a session and return the local session directory.
@@ -736,10 +938,27 @@ def download_session(
         <dir>/calibration_data/train/*.csv
         <dir>/calibration_data/test/*.csv
         <dir>/tests.txt
+
+    progress/on_bytes: file-level and byte-level progress callbacks; see
+    download_files(). With on_bytes set, the session's per-file sizes are
+    looked up first (one extra LIST, or nothing at all on the server backend)
+    and declared up front, so a renderer knows the full download size before
+    the first byte lands instead of watching the denominator grow.
     """
     listing = list_session(device_id, date)
+    keys = listing.all_keys()
+    sizes: dict[str, int] = {}
+    if on_bytes is not None:
+        sizes = session_sizes(device_id, date)
+        for k in keys:
+            _emit_bytes(on_bytes, k, None, sizes.get(k))
     download_files(
-        listing.all_keys(), cache_root=cache_root, progress=progress, workers=workers,
+        keys,
+        cache_root=cache_root,
+        progress=progress,
+        on_bytes=on_bytes,
+        sizes=sizes,
+        workers=workers,
     )
     root = Path(cache_root) if cache_root else DEFAULT_CACHE_ROOT
     return root / device_type(device_id) / device_id / _dotted_from_iso(date)

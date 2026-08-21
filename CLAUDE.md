@@ -133,6 +133,16 @@ connect/read timeouts (10s/60s) + standard retries, and `ensure_local()`'s actua
 retried up to 3× with backoff, then **raised**. Transient errors (timeouts, dropped connections, 5xx) retry;
 terminal ones (404/403) fail fast. The contract is "recover from a blip, but fail eventually if the bucket is
 truly down" — never hang forever. `download_files()` still fails the whole session on an unrecovered file.
+**Progress reporting is two-level** (v0.58.0). `download_files()`/`download_session()`/`ensure_local()` take a
+file-level `progress(idx, total, key)` *and* a byte-level `on_bytes(key, delta, total, cached)` — `delta=None`
+means "declare/reset this key" (sent before each attempt, so a `_transfer_with_retry` retry can't over-count),
+`cached=True` means the file was already local so a renderer should drop it from the byte denominator. Byte
+counts are **wire** bytes (compressed, matching what a LIST reports). Without `on_bytes`, nothing changes and no
+extra request is made; with it, `ensure_local()` HEADs for a size only when the caller didn't pass `size_hint`,
+and `download_session()` pre-declares every size from one size-aware LIST (`session_sizes()` /
+`list_prefix_sizes()`, S3 backend only — `{}` means "unknown", never "empty"). This exists because a session is
+often a few files where one is hundreds of MB: a files-completed counter parks on "2/4" for minutes and is
+indistinguishable from a hang.
 `storage/picker.py` provides Tk bucket-browser dialogs (opt-in; needs tkinter).
 Picker loading is piece-wise (v0.37.0): `load_types_and_devices()` fans the per-type device listings out over a
 thread pool, streams chunks to the UI as each type completes, and caches the result for 5 min (instant reopen);
