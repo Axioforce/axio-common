@@ -31,6 +31,9 @@ TYPE_ID_NAME_MAP = {
     "14": "Load Cells v1.2",
     "15": "Force Pedal - Left",
     "16": "Force Pedal - Right",
+    # Same board as "14" Load Cell v1.2 (ATI Axia90-F-1000 six-axis cell);
+    # name matches AxioCanon deviceTypes/deviceType/17.
+    "17": "Axia90-F-1000",
     "af": "Axiocell",
 }
 
