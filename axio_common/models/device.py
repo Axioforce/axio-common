@@ -34,6 +34,9 @@ TYPE_ID_NAME_MAP = {
     # Same board as "14" Load Cell v1.2 (ATI Axia90-F-1000 six-axis cell);
     # name matches AxioCanon deviceTypes/deviceType/17.
     "17": "Axia90-F-1000",
+    # Dev kit (axioforce-devkit-firmware): STM32N657 base + flex with 5x
+    # HAL3304 magnetometers, ISM330BX IMU and a TMP118.
+    "18": "Axioforce Devkit",
     "af": "Axiocell",
 }
 
