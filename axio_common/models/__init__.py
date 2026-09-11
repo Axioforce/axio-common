@@ -13,6 +13,10 @@ from .baseline import Baseline, BaselineSensor
 from .load_cell import (
     LoadCell, LoadCellManufacturing, LoadCellNote, MoldNote, parse_load_cell_id,
 )
+from .devkit import (
+    Devkit, DevkitAssignmentHistory,
+    UNIDENTIFIED_FLEX_FP, unidentified_flex,
+)
 from .calibration_session import (
     CalibrationSession, CalibrationSessionCalibrator, CalibrationSessionDate,
     CALIBRATION_SESSION_STATUSES,
@@ -67,6 +71,8 @@ __all__ = [
     "STAGE_TYPES", "STAGE_LOCATIONS", "COLOR_BINS",
     "KIND_TRAIN", "KIND_TEST", "KIND_OTHER",
     "parse_load_cell_id",
+    "Devkit", "DevkitAssignmentHistory",
+    "UNIDENTIFIED_FLEX_FP", "unidentified_flex",
     "CalibrationActivity", "CalibrationFamilyActivity",
     "CalibrationFamilyDay", "CalibrationActivityDayOverride",
     "Order", "ORDER_STATUSES",
