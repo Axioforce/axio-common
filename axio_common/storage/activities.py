@@ -119,6 +119,7 @@ TYPE_ID_TO_FAMILY: Dict[str, str] = {
     "12": "xl",
     "09": "insole",   # Shoe Insole Left
     "0a": "insole",   # Shoe Insole Right
+    "18": "devkit",   # Axioforce dev kit (STM32N657 base + 5x HAL3304 flex)
 }
 
 
@@ -197,6 +198,23 @@ DEFAULT_BY_TYPE_AND_SESSION: Dict[str, Dict[int, List[str]]] = {
             "TE-LNG", "TE-LAT", "TE-STL", "TE-CHR", "TE-ADB", "TE-MIP",
             "TE-MDS",
         ],
+    },
+    # Dev kit (type 18): NO PROCEDURE DEFINED YET.
+    #
+    # Deliberately empty rather than absent, and deliberately not populated
+    # with invented activity codes. The entry has to exist because
+    # default_expected_for() falls back to DEFAULT_EXPECTED -- the full
+    # plate+insole activity list -- for any family it does not recognise,
+    # which would mark every dev-kit session as missing ~40 activities it was
+    # never meant to run.
+    #
+    # Empty means "nothing is expected yet", so a session is complete by
+    # default instead of permanently red. That is the honest state: the dev
+    # kit has no calibration procedure written. When one exists, put its real
+    # codes here (and in ACTIVITIES), or better, let the session drive its own
+    # list from its tests.txt via parse_expected_activities_from_tests_txt().
+    "devkit": {
+        1: [],
     },
 }
 
