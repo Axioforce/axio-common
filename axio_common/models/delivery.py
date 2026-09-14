@@ -70,6 +70,10 @@ class Delivery(Base):
     shipped_at = Column(DateTime(timezone=True), nullable=True)
     delivered_at = Column(DateTime(timezone=True), nullable=True)
     returned_at = Column(DateTime(timezone=True), nullable=True)
+    # Why the plate came back — optional free text set when it is marked
+    # returned. Read by the Plate Decision Board so the decider sees the
+    # reason next to the customer it came back from.
+    return_reason = Column(Text, nullable=True)
 
     tracking_number = Column(String, nullable=True)
     carrier = Column(String, nullable=True)
@@ -102,6 +106,7 @@ class DeliveryResponse(BaseModel):
     shipped_at: Optional[datetime] = None
     delivered_at: Optional[datetime] = None
     returned_at: Optional[datetime] = None
+    return_reason: Optional[str] = None
     tracking_number: Optional[str] = None
     carrier: Optional[str] = None
     notes: Optional[str] = None

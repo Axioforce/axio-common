@@ -101,7 +101,8 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   (`CALIBRATION_SESSION_STATUSES`) — the human-scheduled calibration event, optionally linked to a `Job`.
 - **`LiveTestSession`** → `LiveTestCell` / `LiveTestAggregate` (`STAGE_TYPES`, `STAGE_LOCATIONS`, `COLOR_BINS`)
   + `LiveTestSettings` — live-test monitoring.
-- **`Delivery`** (`deliveries`, `DELIVERY_STATUSES`) — terminal node, links a `Device` (and optionally a `Job`).
+- **`Delivery`** (`deliveries`, `DELIVERY_STATUSES`) — terminal node, links a `Device` (and optionally a `Job`). `return_reason` (v0.61.0) is optional free text set when a plate is marked returned.
+- **`PlateDecision`** (`plate_decisions`, `PLATE_DECISIONS = flag | recalibrate | rework | ready_to_ship | hold | scrap`, v0.61.0) — append-only record of the calls a human makes on a plate that is awaiting a decision (failed live test, customer return, or flagged by hand): what, who (typed name), when, why, plus nullable links to the live-test session and delivery the decider was looking at. `device_axf_id` is **not** an FK to `devices` (same reasoning as `ForcePlate`). A decision is an *event* in axio-server's plate lifecycle rule — the newest event names the stage — so recording one moves the plate immediately.
 - **`Client`** (`clients`) — registered daemon/client hosts (heartbeat tracking via `utils/shared.py`).
 
 Most models also define paired pydantic `*Request`/`*Response` schemas in the same file for the API to reuse.
