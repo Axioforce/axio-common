@@ -120,6 +120,18 @@ class Run(Base):
                 if device:
                     device.update_best_metrics(update, self.number, job)
                     db.add(device)
+
+                # A dev kit (type 18) also gets its unit record written here.
+                # Same moment and same reason as the line above: this is when
+                # a device acquires the model it will ship with, and the
+                # devkits row is what lets support reconstruct, from a device
+                # id alone, when a shipped unit was calibrated and against
+                # what. No-op for every other device type. Deliberately not
+                # wrapped in a try/except: it shares this transaction, and a
+                # unit record silently missing is the support dead end the
+                # table exists to prevent.
+                from axio_common.models import Devkit
+                Devkit.record_calibration(db, job, self.number)
         else:
             logger.info(f"Run {self.number} is not the best run for job {self.job_id} "
                         f"({update.test_metrics['TE-all']['mae'][-1]:.4f} > "
