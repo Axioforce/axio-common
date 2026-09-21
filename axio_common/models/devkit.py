@@ -710,6 +710,18 @@ def shippability(db: Session, device_axf_id: str,
 
     for row in passing:
         if not _identifier_mismatch(row, devkit):
+            if devkit is None:
+                # The result carries all three identifiers, so it is still
+                # evidence about a specific unit -- but there is no record to
+                # contradict it either, which is a different and weaker
+                # thing. Say which of the two this is.
+                return {"shippable": True, "eol_result_id": row.id,
+                        "passed_at": row.completed_at or row.recorded_at,
+                        "reason": f"End-of-line test #{row.id} passed"
+                                  f"{_eol_when(row)}. NOTE: no devkits record "
+                                  f"exists for this unit, so nothing is on "
+                                  f"file to confirm the boards tested are "
+                                  f"still the boards in it."}
             return {"shippable": True, "eol_result_id": row.id,
                     "passed_at": row.completed_at or row.recorded_at,
                     "reason": f"End-of-line test #{row.id} passed"
