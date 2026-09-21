@@ -14,12 +14,14 @@ from .load_cell import (
     LoadCell, LoadCellManufacturing, LoadCellNote, MoldNote, parse_load_cell_id,
 )
 from .devkit import (
-    Devkit, DevkitAssignmentHistory,
+    Devkit, DevkitAssignmentHistory, EolResult,
     DevkitRequest, DevkitUpdateRequest,
     DevkitResponse, DevkitAssignmentHistoryResponse,
     DevkitCaptureResponse, DevkitCalibrationResponse, DevkitRecordResponse,
-    DEVKIT_TYPE_ID, UNIDENTIFIED_FLEX_FP, unidentified_flex,
-    flex_fp_from_device_id, is_devkit_id, model_artifact_name,
+    EolResultRequest, EolResultResponse, ShippabilityResponse,
+    DEVKIT_TYPE_ID, UNIDENTIFIED_FLEX_FP, EOL_SCHEMA, EOL_CHECKS,
+    unidentified_flex, format_flex_fp, device_id_from_flex_fp,
+    flex_fp_from_device_id, is_devkit_id, model_artifact_name, shippability,
 )
 from .calibration_session import (
     CalibrationSession, CalibrationSessionCalibrator, CalibrationSessionDate,
@@ -91,6 +93,9 @@ __all__ = [
     "DevkitRecordResponse",
     "DEVKIT_TYPE_ID", "UNIDENTIFIED_FLEX_FP", "unidentified_flex",
     "flex_fp_from_device_id", "is_devkit_id", "model_artifact_name",
+    "EolResult", "EolResultRequest", "EolResultResponse",
+    "ShippabilityResponse", "EOL_SCHEMA", "EOL_CHECKS",
+    "format_flex_fp", "device_id_from_flex_fp", "shippability",
     "CalibrationActivity", "CalibrationFamilyActivity",
     "CalibrationFamilyDay", "CalibrationActivityDayOverride",
     "Order", "ORDER_STATUSES",
