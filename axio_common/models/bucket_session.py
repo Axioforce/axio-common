@@ -83,6 +83,13 @@ class CalibrationBucketSession(Base):
     size = Column(String, nullable=True)
     room_temp = Column(Float, nullable=True)
 
+    # Calibrator weight class for this calibration day: 'heavy' | 'light'.
+    # A complete plate calibration is one heavy day and one light day, in
+    # either order (Day 1 is free; Day 2 must be the other). Set by the DAQ
+    # via POST /start (v0.63.0); NULL on legacy rows, where the day-number
+    # rule still applies. Plain String validated at the API (no DB enums).
+    weight_class = Column(String, nullable=True, index=True)
+
     # Admin flags. Replaces _config/admin_state.json's session_flags.
     flag_complete = Column(Boolean, nullable=False, default=False)
     flag_soft_deleted = Column(Boolean, nullable=False, default=False)
@@ -220,6 +227,7 @@ class CalibrationBucketSessionResponse(BaseModel):
     day_number: Optional[int] = None
     size: Optional[str] = None
     room_temp: Optional[float] = None
+    weight_class: Optional[str] = None
     flag_complete: bool = False
     flag_soft_deleted: bool = False
     is_overridden: bool = False

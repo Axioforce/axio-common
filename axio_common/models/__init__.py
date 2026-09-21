@@ -59,6 +59,10 @@ from .plate_decision import (
     DECISION_FLAG, DECISION_RECALIBRATE, DECISION_REWORK,
     DECISION_READY_TO_SHIP, DECISION_HOLD, DECISION_SCRAP,
 )
+from .calibration_work_session import (
+    CalibrationWorkSession, CalibrationWorkSessionResponse,
+    WEIGHT_CLASSES, WEIGHT_CLASS_HEAVY, WEIGHT_CLASS_LIGHT,
+)
 
 __all__ = [
     "Client", "Device", "Job", "Run",
@@ -95,4 +99,6 @@ __all__ = [
     "PlateDecision", "PlateDecisionResponse", "PLATE_DECISIONS",
     "DECISION_FLAG", "DECISION_RECALIBRATE", "DECISION_REWORK",
     "DECISION_READY_TO_SHIP", "DECISION_HOLD", "DECISION_SCRAP",
+    "CalibrationWorkSession", "CalibrationWorkSessionResponse",
+    "WEIGHT_CLASSES", "WEIGHT_CLASS_HEAVY", "WEIGHT_CLASS_LIGHT",
 ]
