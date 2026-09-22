@@ -15,7 +15,11 @@ from .load_cell import (
 )
 from .devkit import (
     Devkit, DevkitAssignmentHistory,
-    UNIDENTIFIED_FLEX_FP, unidentified_flex,
+    DevkitRequest, DevkitUpdateRequest,
+    DevkitResponse, DevkitAssignmentHistoryResponse,
+    DevkitCaptureResponse, DevkitCalibrationResponse, DevkitRecordResponse,
+    DEVKIT_TYPE_ID, UNIDENTIFIED_FLEX_FP, unidentified_flex,
+    flex_fp_from_device_id, is_devkit_id, model_artifact_name,
 )
 from .calibration_session import (
     CalibrationSession, CalibrationSessionCalibrator, CalibrationSessionDate,
@@ -81,7 +85,12 @@ __all__ = [
     "KIND_TRAIN", "KIND_TEST", "KIND_OTHER",
     "parse_load_cell_id",
     "Devkit", "DevkitAssignmentHistory",
-    "UNIDENTIFIED_FLEX_FP", "unidentified_flex",
+    "DevkitRequest", "DevkitUpdateRequest",
+    "DevkitResponse", "DevkitAssignmentHistoryResponse",
+    "DevkitCaptureResponse", "DevkitCalibrationResponse",
+    "DevkitRecordResponse",
+    "DEVKIT_TYPE_ID", "UNIDENTIFIED_FLEX_FP", "unidentified_flex",
+    "flex_fp_from_device_id", "is_devkit_id", "model_artifact_name",
     "CalibrationActivity", "CalibrationFamilyActivity",
     "CalibrationFamilyDay", "CalibrationActivityDayOverride",
     "Order", "ORDER_STATUSES",
