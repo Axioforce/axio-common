@@ -22,6 +22,8 @@ from .devkit import (
     DEVKIT_TYPE_ID, UNIDENTIFIED_FLEX_FP, EOL_SCHEMA, EOL_CHECKS,
     unidentified_flex, format_flex_fp, device_id_from_flex_fp,
     flex_fp_from_device_id, is_devkit_id, model_artifact_name, shippability,
+    UNIDENTIFIED_TMP_UID, format_tmp_uid, format_mcu_uid,
+    AUTO_EOL_TOOL, AUTO_EOL_CHECKS, is_automatic_eol,
 )
 from .calibration_session import (
     CalibrationSession, CalibrationSessionCalibrator, CalibrationSessionDate,
@@ -96,6 +98,8 @@ __all__ = [
     "EolResult", "EolResultRequest", "EolResultResponse",
     "ShippabilityResponse", "EOL_SCHEMA", "EOL_CHECKS",
     "format_flex_fp", "device_id_from_flex_fp", "shippability",
+    "UNIDENTIFIED_TMP_UID", "format_tmp_uid", "format_mcu_uid",
+    "AUTO_EOL_TOOL", "AUTO_EOL_CHECKS", "is_automatic_eol",
     "CalibrationActivity", "CalibrationFamilyActivity",
     "CalibrationFamilyDay", "CalibrationActivityDayOverride",
     "Order", "ORDER_STATUSES",

@@ -168,6 +168,72 @@ def flex_fp_from_device_id(device_axf_id: Optional[str]) -> Optional[str]:
     return None if unidentified_flex(fp) else fp
 
 
+#: The TMP118 id a flex reports when the sensor did not answer. The SDK
+#: zero-fills it on a failed read (firmware `bcmd.c`), so all zeros is "not
+#: read", never an id.
+UNIDENTIFIED_TMP_UID = "000000000000"
+
+_TMP_UID_RE = re.compile(r"^[0-9A-F]{12}$")
+_MCU_UID_RE = re.compile(r"^[0-9A-F]{24}$")
+
+
+def format_tmp_uid(value) -> Optional[str]:
+    """Canonical `21E8A3E64CCF`: the TMP118's 48-bit id, 12 uppercase hex.
+
+    The spelling the firmware's `flexid` reply prints and `axio-devkit eol`
+    records (`eol.tmp_uid_str`). Accepts that string in any case, or the SDK's
+    6 raw bytes (same byte order, only the case differs). Returns None for
+    None and raises ValueError for anything that is not 12 hex digits.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray)):
+        if len(value) != 6:
+            raise ValueError(f"tmp_uid is 6 bytes, got {len(value)}")
+        return bytes(value).hex().upper()
+    if isinstance(value, str):
+        text = value.strip().upper()
+        if not _TMP_UID_RE.match(text):
+            raise ValueError(f"tmp_uid {value!r} is not 12 hex digits")
+        return text
+    raise ValueError(f"not a tmp_uid: {value!r}")
+
+
+def format_mcu_uid(value) -> Optional[str]:
+    """Canonical `0037324E4236501000340020`: the STM32 UID, 24 uppercase hex.
+
+    **Byte order is the trap here.** The firmware's text `flexid` reply and
+    the USB serial string print the three UID words big-endian in the order
+    w2, w1, w0; the binary IDENTIFY reply carries them little-endian w0, w1,
+    w2, so the SDK's raw `mcu_uid.hex()` is the full byte reversal of the
+    string on every board ledger. A 24-hex string cannot say which order it
+    is in, so strings are taken to be in the `flexid` / USB-serial order --
+    what AxioTDK parses and what `axio-devkit eol` records (`eol.mcu_uid_str`)
+    -- and raw IDENTIFY bytes are converted exactly as `eol.mcu_uid_str` does.
+    Never hand this a `.hex()` of the IDENTIFY bytes as a string.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray)):
+        raw = bytes(value)
+        if len(raw) != 12:
+            raise ValueError(f"mcu_uid is 12 bytes, got {len(raw)}")
+        w0 = int.from_bytes(raw[0:4], "little")
+        w1 = int.from_bytes(raw[4:8], "little")
+        w2 = int.from_bytes(raw[8:12], "little")
+        return f"{w2:08X}{w1:08X}{w0:08X}"
+    if isinstance(value, str):
+        text = value.strip().upper()
+        if not _MCU_UID_RE.match(text):
+            raise ValueError(f"mcu_uid {value!r} is not 24 hex digits")
+        return text
+    raise ValueError(f"not an mcu_uid: {value!r}")
+
+
+def _all_zero(text: Optional[str]) -> bool:
+    return bool(text) and set(text) == {"0"}
+
+
 def is_devkit_id(device_axf_id: Optional[str]) -> bool:
     """True for a type-18 device id in either separator spelling."""
     if not isinstance(device_axf_id, str):
@@ -390,6 +456,75 @@ class Devkit(Base):
             f"{artifact or '(unnamed)'}")
         return row
 
+    @classmethod
+    def record_identity(cls, db: Session, device_axf_id: str, *,
+                        flex_fp=None, tmp_uid=None, mcu_uid=None,
+                        source: str, reason: Optional[str] = None
+                        ) -> Optional["Devkit"]:
+        """Learn which boards are in a dev kit, BEFORE its EOL test (WI-547).
+
+        The training path can only know the fingerprint, because the device id
+        IS the fingerprint. `tmp_uid` (the flex) and `mcu_uid` (the base
+        board) come off the board itself, and they have to be on the unit
+        record before EOL runs: `shippability()` holds an EOL result to the
+        identifiers on the record, and a record that never learned them has
+        nothing to hold it to -- a base-board swap between calibration and
+        EOL would go unseen.
+
+        Scoped to device type 18. Anything else returns None untouched, as
+        does `record_calibration`. The UNIDENTIFIED sentinel is refused as a
+        device id (returns None, logs a warning), and an all-zero tmp_uid or
+        mcu_uid is a read that failed, not an id: it is ignored rather than
+        stored. A `flex_fp` that does not match the id is a report from a
+        different unit and raises ValueError, as does a malformed uid.
+
+        Creates the row when there is none -- this is typically the first
+        write a unit gets, at its calibration session -- and moves each
+        identifier through `_set_identifier`, so a value that changes is an
+        audited board swap and a None never erases anything. Does NOT commit;
+        the caller owns the transaction.
+        """
+        if not is_devkit_id(device_axf_id):
+            return None
+        m = _DEVICE_ID_RE.match(device_axf_id.strip())
+        axf = f"{DEVKIT_TYPE_ID}.{m.group(2).lower()}"
+        id_fp = flex_fp_from_device_id(axf)
+        if id_fp is None:
+            logger.warning(
+                f"Refusing to record board identity against {device_axf_id}: "
+                f"that is the UNIDENTIFIED flex sentinel, not a device.")
+            return None
+
+        reported_fp = format_flex_fp(flex_fp)
+        if reported_fp is not None and reported_fp != id_fp:
+            raise ValueError(
+                f"flex_fp {reported_fp} does not match {axf}: the id is "
+                f"derived from the fingerprint, so this report describes "
+                f"{device_id_from_flex_fp(reported_fp) or 'no unit'}")
+        tmp = format_tmp_uid(tmp_uid)
+        mcu = format_mcu_uid(mcu_uid)
+        if _all_zero(tmp):
+            logger.warning(f"Devkit {axf}: tmp_uid reported as all zeros "
+                           f"(the TMP118 did not answer); not stored.")
+            tmp = None
+        if _all_zero(mcu):
+            logger.warning(f"Devkit {axf}: mcu_uid reported as all zeros; "
+                           f"not stored.")
+            mcu = None
+
+        row = db.query(cls).filter(cls.device_axf_id == axf).first()
+        if row is None:
+            row = cls(device_axf_id=axf, device_type_id=DEVKIT_TYPE_ID,
+                      initialized_at=current_time(), source=source)
+            db.add(row)
+        why = reason or f"reported by {source}"
+        row._set_identifier(db, "flex_fp", id_fp, changed_by=source,
+                            reason=why)
+        row._set_identifier(db, "tmp_uid", tmp, changed_by=source, reason=why)
+        row._set_identifier(db, "mcu_uid", mcu, changed_by=source, reason=why)
+        row.updated_at = current_time()
+        return row
+
     def to_dict(self):
         return {
             "device_axf_id": self.device_axf_id,
@@ -479,6 +614,21 @@ EOL_SCHEMA = 1
 #: the known-load step" and "the known-load step passed" must never collapse
 #: into the same stored row.
 EOL_CHECKS = ("identity", "mags", "imu", "temp", "usb", "rate", "known_load")
+
+#: `eol_results.tool` of a row the SERVER wrote from a calibration job's test
+#: split (WI-546), as opposed to one `axio-devkit eol` wrote at the bench.
+#: Such a row carries only the `known_load` check -- accuracy and the
+#: sensing chain are all the recorded captures can establish; the six live
+#: checks need the board -- so it is stored with `passed = False` (an
+#: incomplete test is not a passing one) and the known-load verdict lives in
+#: `checks["known_load"]["passed"]`. It can therefore never ship a unit on
+#: its own; `shippability()` names it as what it is.
+AUTO_EOL_TOOL = "axio-server auto-eol"
+AUTO_EOL_CHECKS = ("known_load",)
+
+
+def is_automatic_eol(row) -> bool:
+    return getattr(row, "tool", None) == AUTO_EOL_TOOL
 
 
 class EolResult(Base):
@@ -627,7 +777,9 @@ def _identifier_mismatch(row: "EolResult",
     that never read the TMP118 must not un-ship a unit. An identifier the
     *record* does not carry cannot disagree either: a `devkits` row that has
     never been told its `mcu_uid` has no claim to contradict. Only two
-    present, differing values are a mismatch.
+    present, differing values are a mismatch. Case is not a difference: the
+    record spells uids in uppercase (`format_tmp_uid` / `format_mcu_uid`)
+    and a hand-uploaded result may not.
     """
     if devkit is None:
         return []
@@ -635,7 +787,8 @@ def _identifier_mismatch(row: "EolResult",
     for field in ("flex_fp", "tmp_uid", "mcu_uid"):
         tested = getattr(row, field)
         current = getattr(devkit, field)
-        if tested and current and tested != current:
+        if tested and current and \
+                tested.strip().lower() != current.strip().lower():
             out.append(field)
     return out
 
@@ -687,7 +840,11 @@ def shippability(db: Session, device_axf_id: str,
                           f"{device_axf_id}. A unit cannot be shipped "
                           f"without one."}
 
-    passing = [r for r in rows if r.passed and not r.simulated]
+    # An automatic row is excluded even if it were ever stored as passed: it
+    # cannot have run the live checks, so it is never the evidence a unit
+    # ships on (see AUTO_EOL_TOOL).
+    passing = [r for r in rows
+               if r.passed and not r.simulated and not is_automatic_eol(r)]
     if not passing:
         if any(r.passed and r.simulated for r in rows):
             return {
@@ -696,7 +853,22 @@ def shippability(db: Session, device_axf_id: str,
                           f"{device_axf_id} were run against the simulator, "
                           f"not against hardware. A simulated pass says "
                           f"nothing about a physical unit."}
-        latest = rows[0]
+        bench = [r for r in rows if not is_automatic_eol(r)]
+        if not bench:
+            # Only the server's automatic known-load evidence is on file. Say
+            # what it found and what is still missing, rather than calling a
+            # row that could not run six of seven checks a failed test.
+            auto = rows[0]
+            kl = (auto.checks or {}).get("known_load") or {}
+            verdict = "passed" if kl.get("passed") else "did not pass"
+            return {
+                "shippable": False, "eol_result_id": None, "passed_at": None,
+                "reason": f"Only automatic end-of-line evidence is on file for "
+                          f"{device_axf_id}: the known-load check from its "
+                          f"calibration test split (#{auto.id}) {verdict}. "
+                          f"The live checks ({', '.join(c for c in EOL_CHECKS if c not in AUTO_EOL_CHECKS)}) "
+                          f"need the unit on the bench (axio-devkit eol)."}
+        latest = bench[0]
         failed = [c for c, v in sorted((latest.checks or {}).items())
                   if isinstance(v, dict) and not v.get("passed")]
         detail = f" Failing checks: {', '.join(failed)}." if failed else ""
