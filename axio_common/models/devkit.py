@@ -497,8 +497,10 @@ class Devkit(Base):
         does `record_calibration`. The UNIDENTIFIED sentinel is refused as a
         device id (returns None, logs a warning), and an all-zero tmp_uid or
         mcu_uid is a read that failed, not an id: it is ignored rather than
-        stored. A `flex_fp` that does not match the id is a report from a
-        different unit and raises ValueError, as does a malformed uid.
+        stored. A *reported* `flex_fp` of the sentinel is the same kind of
+        failed read and is ignored the same way (WI-607). Any other `flex_fp`
+        that does not match the id is a report from a different unit and
+        raises ValueError, as does a malformed uid.
 
         Creates the row when there is none -- this is typically the first
         write a unit gets, at its calibration session -- and moves each
@@ -518,6 +520,16 @@ class Devkit(Base):
             return None
 
         reported_fp = format_flex_fp(flex_fp)
+        if reported_fp is not None and unidentified_flex(reported_fp):
+            # The sentinel (`00000000`, or the SDK's int 0) is a fingerprint
+            # that did not form -- a failed read, like an all-zero tmp_uid,
+            # not a report from "unit zero" (WI-607). Comparing it to the id
+            # raised, which cost bucket_sync the good uids on the same
+            # header line; it is neither a flex change nor a new unit.
+            logger.warning(f"Devkit {axf}: flex_fp reported as the "
+                           f"UNIDENTIFIED sentinel (the fingerprint did not "
+                           f"form); not a flex change.")
+            reported_fp = None
         if reported_fp is not None and reported_fp != id_fp:
             raise ValueError(
                 f"flex_fp {reported_fp} does not match {axf}: the id is "

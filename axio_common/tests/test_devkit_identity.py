@@ -38,7 +38,8 @@ from sqlalchemy.orm import sessionmaker
 from axio_common.database import Base
 from axio_common.models.devkit import (
     AUTO_EOL_TOOL, Devkit, DevkitAssignmentHistory, EolResult,
-    format_mcu_uid, format_tmp_uid, shippability,
+    device_id_from_flex_fp, flex_fp_from_device_id, format_mcu_uid,
+    format_tmp_uid, shippability,
 )
 
 KIT = "18.a0e0c001"
@@ -139,6 +140,33 @@ def test_a_fingerprint_from_another_unit_is_refused(db):
     with pytest.raises(ValueError):
         Devkit.record_identity(db, KIT, flex_fp="5fdb3916", tmp_uid=TMP,
                                source="t")
+
+
+@pytest.mark.parametrize("sentinel", ["00000000", 0])
+def test_a_reported_sentinel_flex_fp_is_a_failed_read_not_a_new_unit(
+        db, sentinel):
+    # WI-607: like an all-zero tmp_uid. It used to raise "does not match",
+    # dropping the good uids that arrived with it.
+    row = Devkit.record_identity(db, KIT, flex_fp=sentinel, tmp_uid=TMP,
+                                 mcu_uid=MCU, source="t")
+    db.commit()
+    assert (row.flex_fp, row.tmp_uid, row.mcu_uid) == ("a0e0c001", TMP, MCU)
+    # On a known unit it is never a flex change either.
+    Devkit.record_identity(db, KIT, flex_fp=sentinel, source="bucket_sync")
+    db.commit()
+    assert db.get(Devkit, KIT).flex_fp == "a0e0c001"
+    assert db.query(Devkit).count() == 1
+    assert db.query(DevkitAssignmentHistory).count() == 0
+
+
+def test_the_sentinel_never_derives_a_device_id(db):
+    assert device_id_from_flex_fp("00000000") is None
+    assert device_id_from_flex_fp(0) is None
+    assert flex_fp_from_device_id("18.00000000") is None
+    assert flex_fp_from_device_id("18-00000000") is None
+    assert Devkit.record_identity(db, "18-00000000", flex_fp="00000000",
+                                  source="t") is None
+    assert db.query(Devkit).count() == 0
 
 
 def test_a_malformed_uid_is_refused_before_anything_is_written(db):
