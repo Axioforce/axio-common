@@ -150,8 +150,54 @@ def test_a_malformed_uid_is_refused_before_anything_is_written(db):
 
 # --- shippability vs the automatic row --------------------------------------
 
-def _eol(db, *, tool, passed, checks, mcu=MCU):
-    row = EolResult(device_axf_id=KIT, flex_fp="a0e0c001", tmp_uid=TMP,
+# --- a failed read is never a flex change (WI-594) ---------------------------
+#
+# Every intake path -- bucket_sync's tests.txt header (via record_identity),
+# POST / PATCH /devkit/devkits, record_calibration -- ends in
+# `_set_identifier`, so the guard lives there and these pin it.
+
+ZERO_TMP = "000000000000"
+
+
+def test_all_zero_tmp_uid_on_a_known_unit_is_not_a_flex_change(db):
+    Devkit.record_identity(db, KIT, tmp_uid=TMP, mcu_uid=MCU, source="t")
+    db.commit()
+    # The next session's header carries a TMP118 that did not answer.
+    Devkit.record_identity(db, KIT, tmp_uid=ZERO_TMP, mcu_uid="0" * 24,
+                           source="bucket_sync")
+    db.commit()
+    row = db.get(Devkit, KIT)
+    assert (row.tmp_uid, row.mcu_uid) == (TMP, MCU)
+    assert db.query(DevkitAssignmentHistory).count() == 0
+
+
+def test_set_identifier_ignores_failed_reads_from_any_caller(db):
+    row = Devkit.record_identity(db, KIT, tmp_uid=TMP, mcu_uid=MCU,
+                                 source="t")
+    db.commit()
+    assert row._set_identifier(db, "tmp_uid", ZERO_TMP) is False
+    assert row._set_identifier(db, "mcu_uid", "0" * 24) is False
+    assert row._set_identifier(db, "flex_fp", "00000000") is False
+    db.commit()
+    assert (row.flex_fp, row.tmp_uid, row.mcu_uid) == ("a0e0c001", TMP, MCU)
+    assert db.query(DevkitAssignmentHistory).count() == 0
+
+
+def test_a_stored_failed_read_is_replaced_as_a_first_sighting(db):
+    # A row written before the guard existed may already hold zeros; the
+    # first good read fills it in without claiming a board was swapped.
+    db.add(Devkit(device_axf_id=KIT, device_type_id="18", flex_fp="00000000",
+                  tmp_uid=ZERO_TMP, mcu_uid="0" * 24))
+    db.commit()
+    Devkit.record_identity(db, KIT, tmp_uid=TMP, mcu_uid=MCU, source="t")
+    db.commit()
+    row = db.get(Devkit, KIT)
+    assert (row.flex_fp, row.tmp_uid, row.mcu_uid) == ("a0e0c001", TMP, MCU)
+    assert db.query(DevkitAssignmentHistory).count() == 0
+
+
+def _eol(db, *, tool, passed, checks, mcu=MCU, tmp=TMP):
+    row = EolResult(device_axf_id=KIT, flex_fp="a0e0c001", tmp_uid=tmp,
                     mcu_uid=mcu, passed=passed, simulated=False,
                     checks=checks, tool=tool,
                     completed_at=datetime(2026, 9, 22, tzinfo=timezone.utc),
@@ -200,3 +246,17 @@ def test_a_real_swap_still_un_ships(db):
          mcu="0037324E4236501000340099")
     out = shippability(db, KIT)
     assert out["shippable"] is False and "mcu_uid" in out["reason"]
+
+
+def test_a_failed_tmp_read_at_eol_is_not_a_mismatch(db):
+    Devkit.record_identity(db, KIT, tmp_uid=TMP, mcu_uid=MCU, source="t")
+    _eol(db, tool="axio-devkit eol", passed=True, checks={}, tmp=ZERO_TMP)
+    assert shippability(db, KIT)["shippable"] is True
+
+
+def test_a_stored_failed_read_does_not_un_ship_a_real_result(db):
+    db.add(Devkit(device_axf_id=KIT, device_type_id="18", flex_fp="a0e0c001",
+                  tmp_uid=ZERO_TMP, mcu_uid=MCU))
+    db.commit()
+    _eol(db, tool="axio-devkit eol", passed=True, checks={})
+    assert shippability(db, KIT)["shippable"] is True

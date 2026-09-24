@@ -234,6 +234,22 @@ def _all_zero(text: Optional[str]) -> bool:
     return bool(text) and set(text) == {"0"}
 
 
+def _unread(field: str, value) -> bool:
+    """True when an identifier value says the board was NOT read (WI-594).
+
+    None or blank, the UNIDENTIFIED flex sentinel, or an all-zero uid (the
+    SDK zero-fills a TMP118 / UID read that failed). None of these names a
+    board, so none may stand on either side of a swap or a mismatch: a
+    failed read followed by a good one is the board being seen, not changed.
+    """
+    if value is None:
+        return True
+    text = str(value).strip()
+    if field == "flex_fp":
+        return unidentified_flex(text)
+    return not text or _all_zero(text)
+
+
 def is_devkit_id(device_axf_id: Optional[str]) -> bool:
     """True for a type-18 device id in either separator spelling."""
     if not isinstance(device_axf_id, str):
@@ -353,14 +369,20 @@ class Devkit(Base):
         never clears a column and never records a swap: the training path
         knows the fingerprint and nothing else, and a bundle upload knows all
         three. Either must be able to write without erasing the other's work.
+
+        A failed read (`_unread`: all-zero uid, the flex sentinel) is treated
+        exactly like None, on both sides (WI-594). Arriving, it is ignored --
+        storing it would make the next good read look like a swap. Already
+        stored (by a writer that predates this guard), it is no "before":
+        the good read replaces it as a first sighting, with no history row.
         """
-        if new_value is None:
+        if _unread(field, new_value):
             return False
         old = getattr(self, field)
         if old == new_value:
             return False
         setattr(self, field, new_value)
-        if old is None:
+        if _unread(field, old):
             # First time this identifier is known. Not a swap: there is no
             # "before" to record, and logging one would read as though a
             # board had been replaced when it was merely first seen.
@@ -779,7 +801,9 @@ def _identifier_mismatch(row: "EolResult",
     never been told its `mcu_uid` has no claim to contradict. Only two
     present, differing values are a mismatch. Case is not a difference: the
     record spells uids in uppercase (`format_tmp_uid` / `format_mcu_uid`)
-    and a hand-uploaded result may not.
+    and a hand-uploaded result may not. A failed read (all-zero uid, the
+    flex sentinel) carries no identifier either (WI-594): a TMP118 that did
+    not answer at EOL is not a different flex.
     """
     if devkit is None:
         return []
@@ -787,7 +811,7 @@ def _identifier_mismatch(row: "EolResult",
     for field in ("flex_fp", "tmp_uid", "mcu_uid"):
         tested = getattr(row, field)
         current = getattr(devkit, field)
-        if tested and current and \
+        if not _unread(field, tested) and not _unread(field, current) and \
                 tested.strip().lower() != current.strip().lower():
             out.append(field)
     return out
