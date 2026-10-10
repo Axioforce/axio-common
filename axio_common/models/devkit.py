@@ -344,8 +344,36 @@ class Devkit(Base):
     notes = Column(Text, nullable=True)
     source = Column(String, nullable=True)  # provenance, e.g. 'eol-fixture'
 
+    # --- who has the unit (Dyno #874) ------------------------------------
+    #
+    # The CURRENT holder. All nullable: a unit on our bench has no owner,
+    # and every unit recorded before this existed has none either. These
+    # columns move only through `set_owner()`, which appends a
+    # `devkit_owner_history` row whenever the holder changes, so the
+    # question "who had this kit in March" stays answerable. The shipping
+    # protocol that will fill them (#875) is not designed yet; this is the
+    # storage it will write to.
+
+    #: Firebase uid of the holder. The join key: app telemetry carries the
+    #: uid, so this is what connects a kit to what its user did with it.
+    owner_uid = Column(String, nullable=True, index=True)
+    #: Stored lowercased (`set_owner` normalises it).
+    owner_email = Column(String, nullable=True)
+    #: Free text -- a company, lab or team name. Not a foreign key.
+    owner_org = Column(String, nullable=True)
+    #: When the current holder got the unit. Server time of the change unless
+    #: the writer supplied the real hand-over date.
+    owner_since = Column(DateTime(timezone=True), nullable=True)
+    owner_note = Column(Text, nullable=True)
+
     assignment_history = relationship(
         "DevkitAssignmentHistory",
+        back_populates="devkit",
+        cascade="all, delete-orphan",
+        lazy="select",
+    )
+    owner_history = relationship(
+        "DevkitOwnerHistory",
         back_populates="devkit",
         cascade="all, delete-orphan",
         lazy="select",
@@ -559,6 +587,90 @@ class Devkit(Base):
         row.updated_at = current_time()
         return row
 
+    # --- ownership -------------------------------------------------------
+
+    _OWNER_FIELDS = ("owner_uid", "owner_email", "owner_org")
+
+    def set_owner(self, db: Session, *, owner_uid: Optional[str] = None,
+                  owner_email: Optional[str] = None,
+                  owner_org: Optional[str] = None,
+                  owner_note: Optional[str] = None,
+                  owner_since: Optional[datetime] = None,
+                  changed_by: Optional[str] = None,
+                  reason: Optional[str] = None
+                  ) -> Optional["DevkitOwnerHistory"]:
+        """Set, transfer or clear who holds this unit. The only writer.
+
+        The arguments are the WHOLE new owner state, not a patch: a field left
+        None is cleared, and all three of uid / email / org None clears the
+        owner. Blank strings count as None; the email is lowercased.
+
+        Appends a `devkit_owner_history` row, and returns it, when the holder
+        (uid, email or org) actually changes. Re-sending the current holder
+        with a different note or date updates those and records nothing --
+        the history is of who had the unit, not of edits to the note.
+        `owner_since` defaults to now on a change and is cleared with the
+        owner.
+
+        Refuses (ValueError) a unit keyed on the UNIDENTIFIED flex sentinel:
+        `18.00000000` names no unit, so nobody can own it. Also raises on an
+        email with no `@`. Does NOT commit; the caller owns the transaction,
+        so the columns and the history row land together or not at all.
+        """
+        if flex_fp_from_device_id(self.device_axf_id) is None:
+            raise ValueError(
+                f"{self.device_axf_id} is not an identified dev kit (the "
+                f"UNIDENTIFIED flex sentinel names no unit); it cannot have "
+                f"an owner")
+
+        def clean(value):
+            if value is None:
+                return None
+            text = str(value).strip()
+            return text or None
+
+        new = {"owner_uid": clean(owner_uid),
+               "owner_email": clean(owner_email),
+               "owner_org": clean(owner_org)}
+        if new["owner_email"] is not None:
+            new["owner_email"] = new["owner_email"].lower()
+            if "@" not in new["owner_email"]:
+                raise ValueError(
+                    f"owner_email {owner_email!r} is not an email address")
+        old = {f: getattr(self, f) for f in self._OWNER_FIELDS}
+        clearing = all(v is None for v in new.values())
+        changed = new != old
+
+        for field, value in new.items():
+            setattr(self, field, value)
+        self.owner_note = None if clearing else clean(owner_note)
+        if clearing:
+            self.owner_since = None
+        elif owner_since is not None:
+            self.owner_since = owner_since
+        elif changed or self.owner_since is None:
+            self.owner_since = current_time()
+        self.updated_at = current_time()
+
+        if not changed:
+            return None
+        entry = DevkitOwnerHistory(
+            device_axf_id=self.device_axf_id,
+            previous_owner_uid=old["owner_uid"],
+            previous_owner_email=old["owner_email"],
+            previous_owner_org=old["owner_org"],
+            new_owner_uid=new["owner_uid"],
+            new_owner_email=new["owner_email"],
+            new_owner_org=new["owner_org"],
+            changed_at=current_time(),
+            changed_by=changed_by, reason=reason)
+        db.add(entry)
+        logger.info(
+            f"Devkit {self.device_axf_id}: owner "
+            f"{old['owner_email'] or old['owner_uid'] or '(none)'} -> "
+            f"{new['owner_email'] or new['owner_uid'] or '(none)'}")
+        return entry
+
     def to_dict(self):
         return {
             "device_axf_id": self.device_axf_id,
@@ -578,6 +690,11 @@ class Devkit(Base):
             "updated_at": self.updated_at,
             "notes": self.notes,
             "source": self.source,
+            "owner_uid": self.owner_uid,
+            "owner_email": self.owner_email,
+            "owner_org": self.owner_org,
+            "owner_since": self.owner_since,
+            "owner_note": self.owner_note,
         }
 
 
@@ -634,6 +751,39 @@ class DevkitAssignmentHistory(Base):
 Index("ix_devkit_history_device_time",
       DevkitAssignmentHistory.device_axf_id,
       DevkitAssignmentHistory.changed_at)
+
+
+class DevkitOwnerHistory(Base):
+    """Append-only record of a change of holder (Dyno #874).
+
+    One row per set / transfer / clear, written by `Devkit.set_owner` in the
+    same transaction as the `devkits` owner columns. A set has the previous
+    fields NULL, a clear has the new fields NULL. Separate from
+    `devkit_assignment_history`, which is about boards in the unit, not
+    people holding it. Nothing here is ever updated or deleted.
+    """
+    __tablename__ = "devkit_owner_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    device_axf_id = Column(String, ForeignKey("devkits.device_axf_id"),
+                           nullable=False, index=True)
+    previous_owner_uid = Column(String, nullable=True)
+    previous_owner_email = Column(String, nullable=True)
+    previous_owner_org = Column(String, nullable=True)
+    new_owner_uid = Column(String, nullable=True)
+    new_owner_email = Column(String, nullable=True)
+    new_owner_org = Column(String, nullable=True)
+    changed_at = Column(DateTime(timezone=True), nullable=False,
+                        default=current_time)
+    changed_by = Column(String, nullable=True)
+    reason = Column(Text, nullable=True)
+
+    devkit = relationship("Devkit", back_populates="owner_history")
+
+
+Index("ix_devkit_owner_history_device_time",
+      DevkitOwnerHistory.device_axf_id,
+      DevkitOwnerHistory.changed_at)
 
 
 # --- end-of-line test results ------------------------------------------------
@@ -1004,6 +1154,11 @@ class DevkitResponse(BaseModel):
     updated_at: datetime
     notes: Optional[str] = None
     source: Optional[str] = None
+    owner_uid: Optional[str] = None
+    owner_email: Optional[str] = None
+    owner_org: Optional[str] = None
+    owner_since: Optional[datetime] = None
+    owner_note: Optional[str] = None
     #: True when `flex_fp` is the UNIDENTIFIED sentinel. Carried explicitly so
     #: a consumer cannot miss it by reading `flex_fp` as an ordinary value.
     flex_unidentified: bool = False
@@ -1024,6 +1179,40 @@ class DevkitAssignmentHistoryResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class DevkitOwnerRequest(BaseModel):
+    """Body of `PUT /devkit/devkits/{id}/owner`: the whole new owner state.
+
+    Omitted fields are cleared, not kept (it is a PUT). Send all three of
+    uid / email / org as null (or `{}`) to clear the owner. Ownership is
+    deliberately absent from `DevkitRequest` / `DevkitUpdateRequest`, so the
+    history row can never be skipped.
+    """
+    owner_uid: Optional[str] = None
+    owner_email: Optional[str] = None
+    owner_org: Optional[str] = None
+    #: The real hand-over date, if known; defaults to now on a change.
+    owner_since: Optional[datetime] = None
+    owner_note: Optional[str] = None
+    changed_by: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class DevkitOwnerHistoryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    device_axf_id: str
+    previous_owner_uid: Optional[str] = None
+    previous_owner_email: Optional[str] = None
+    previous_owner_org: Optional[str] = None
+    new_owner_uid: Optional[str] = None
+    new_owner_email: Optional[str] = None
+    new_owner_org: Optional[str] = None
+    changed_at: datetime
+    changed_by: Optional[str] = None
+    reason: Optional[str] = None
 
 
 class DevkitCaptureResponse(BaseModel):

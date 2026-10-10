@@ -9,7 +9,7 @@ neural-network-job-distribution and calibration-monitoring platform that runs on
 storage). It is a backend-agnostic core (no FastAPI, no Streamlit) holding the single source of truth for the
 database schema, the calibration-procedure registry, and the Tigris storage layout. It is consumed by its two
 siblings — `../axio-server` (the FastAPI API + job queue) and `../axio-web` (the dashboard) — as an **editable git
-dependency pinned to a tagged version** (currently `v0.33.0`). Because both downstreams pin a tag, **all schema and
+dependency pinned to a tagged version** (currently `v0.66.0`). Because both downstreams pin a tag, **all schema and
 shared-logic changes are upstream-first: change, test, and tag here, then bump the pin downstream.** See the
 workspace root `../CLAUDE.md` for cross-repo conventions and the upstream-first rule.
 
@@ -32,7 +32,7 @@ bump-my-version bump patch                    # bump version (also: minor / majo
 `update_axio_common.sh` automates the full release: prompts for a bump type, bumps + commits + tags, then
 reinstalls the new version into the `axio-server` and `axio-dash` conda envs.
 
-- **Package name**: `axio_common` (pyproject `[project]`); current version **0.40.0**.
+- **Package name**: `axio_common` (pyproject `[project]`); current version **0.66.0**.
 - **Build**: setuptools/wheel; packages auto-discovered (`tool.setuptools.packages.find`).
 - **Deps**: SQLAlchemy>=2.0, pydantic>=2.0, psycopg2-binary, boto3>=1.34, dotenv.
 
@@ -62,7 +62,8 @@ reinstalls the new version into the `axio-server` and `axio-dash` conda envs.
   (UTC-aware default for timestamp columns), `db_middleware.py`, `database.py`.
 - `logger/` — `logger` plus a `HostnameFilter` that stamps hostname/IP onto every record.
 - `insole_sensor_mask.py` / `INSOLE_SENSOR_MASK.md` — insole sensor-mask reference data.
-- `tests/` — unit tests for the procedure registry (resolution, seed derivation, snapshot, validation).
+- `tests/` — unit tests (procedure registry, devkit identity/ownership on in-memory SQLite). Run `pytest axio_common/tests`
+  with `DATABASE_URL=sqlite://` — bare `pytest` at the root also collects `models/` and errors on the pool kwargs.
 
 ### ORM model graph
 
@@ -105,6 +106,13 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
 - **`CalibrationBucketSession.weight_class`** (v0.63.0) — `'heavy' | 'light'`, the calibrator's weight class for that calibration day. A complete plate calibration is one heavy day and one light day in either order; NULL on legacy rows, where the day-number rule still applies.
 - **`CalibrationWorkSession`** (`calibration_work_sessions`, v0.63.0) — a start→stop stretch of work a person does on a calibration day (FK → `calibration_bucket_sessions`, CASCADE). `ended_at` NULL = open. A *calibration* is the day; a *work session* is the time spent on it — one day can have several. Started and ended explicitly from Flux2; nothing is inferred from timers or file counts.
 - **`PlateDecision`** (`plate_decisions`, `PLATE_DECISIONS = flag | recalibrate | rework | ready_to_ship | hold | scrap`, v0.61.0) — append-only record of the calls a human makes on a plate that is awaiting a decision (failed live test, customer return, or flagged by hand): what, who (typed name), when, why, plus nullable links to the live-test session and delivery the decider was looking at. `device_axf_id` is **not** an FK to `devices` (same reasoning as `ForcePlate`). A decision is an *event* in axio-server's plate lifecycle rule — the newest event names the stage — so recording one moves the plate immediately.
+- **`Devkit`** (`devkits`, PK `device_axf_id` = `18.<flex_fp>`, `models/devkit.py`) — dev-kit unit record: board
+  fingerprints (`flex_fp`/`tmp_uid`/`mcu_uid`; swaps → append-only `DevkitAssignmentHistory`), provisioning fields,
+  and `EolResult` (append-only; `shippability()` derives the ship gate). **Owner** (v0.66.0, Dyno #874):
+  nullable `owner_uid` (Firebase uid, indexed) / `owner_email` (lowercased) / `owner_org` / `owner_since` /
+  `owner_note`, moved only by `Devkit.set_owner()` (whole-state set/transfer/clear; refuses the
+  `18.00000000` sentinel), which appends a `DevkitOwnerHistory` (`devkit_owner_history`) row when the holder
+  changes. Never store anything keyed on the sentinel — use `unidentified_flex()` / `flex_fp_from_device_id()`.
 - **`Client`** (`clients`) — registered daemon/client hosts (heartbeat tracking via `utils/shared.py`).
 
 Most models also define paired pydantic `*Request`/`*Response` schemas in the same file for the API to reuse.

@@ -14,8 +14,9 @@ from .load_cell import (
     LoadCell, LoadCellManufacturing, LoadCellNote, MoldNote, parse_load_cell_id,
 )
 from .devkit import (
-    Devkit, DevkitAssignmentHistory, EolResult,
+    Devkit, DevkitAssignmentHistory, DevkitOwnerHistory, EolResult,
     DevkitRequest, DevkitUpdateRequest,
+    DevkitOwnerRequest, DevkitOwnerHistoryResponse,
     DevkitResponse, DevkitAssignmentHistoryResponse,
     DevkitCaptureResponse, DevkitCalibrationResponse, DevkitRecordResponse,
     EolResultRequest, EolResultResponse, ShippabilityResponse,
@@ -88,8 +89,9 @@ __all__ = [
     "STAGE_TYPES", "STAGE_LOCATIONS", "COLOR_BINS",
     "KIND_TRAIN", "KIND_TEST", "KIND_OTHER",
     "parse_load_cell_id",
-    "Devkit", "DevkitAssignmentHistory",
+    "Devkit", "DevkitAssignmentHistory", "DevkitOwnerHistory",
     "DevkitRequest", "DevkitUpdateRequest",
+    "DevkitOwnerRequest", "DevkitOwnerHistoryResponse",
     "DevkitResponse", "DevkitAssignmentHistoryResponse",
     "DevkitCaptureResponse", "DevkitCalibrationResponse",
     "DevkitRecordResponse",
