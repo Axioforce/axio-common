@@ -112,7 +112,14 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   nullable `owner_uid` (Firebase uid, indexed) / `owner_email` (lowercased) / `owner_org` / `owner_since` /
   `owner_note`, moved only by `Devkit.set_owner()` (whole-state set/transfer/clear; refuses the
   `18.00000000` sentinel), which appends a `DevkitOwnerHistory` (`devkit_owner_history`) row when the holder
-  changes. Never store anything keyed on the sentinel — use `unidentified_flex()` / `flex_fp_from_device_id()`.
+  changes. **Kind / terms** (v0.67.0, Dyno #885, firmware `docs/SHIPPING.md` §4): `owner_kind` (one of
+  `DEVKIT_OWNER_KINDS` = `customer | loan | evaluation | internal`, or NULL = unknown/legacy, read as external),
+  `owner_ref` (order/loan/eval reference), `owner_return_by` (date; required for `loan`, allowed for `evaluation`,
+  refused otherwise) — all validated by `set_owner` (ValueError → the server's 400). A change of **kind** counts as
+  a holder change (history gains `previous_owner_kind` / `new_owner_kind` / `new_owner_ref` /
+  `new_owner_return_by`); a ref or return-date change alone writes no history. `set_owner` never refuses an
+  unshippable kit — the gate is advisory; `DevkitShippingReportResponse` is the shape of axio-server's
+  shipped-unshippable / overdue report. Never store anything keyed on the sentinel — use `unidentified_flex()` / `flex_fp_from_device_id()`.
 - **`Client`** (`clients`) — registered daemon/client hosts (heartbeat tracking via `utils/shared.py`).
 
 Most models also define paired pydantic `*Request`/`*Response` schemas in the same file for the API to reuse.

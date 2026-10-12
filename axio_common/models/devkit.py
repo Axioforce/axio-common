@@ -47,12 +47,12 @@ hard to forget, since `18.00000000` otherwise passes the workspace's
 device-id validators and looks legitimate.
 """
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional, List
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from sqlalchemy import (
-    Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, JSON,
+    Boolean, Column, Date, DateTime, Float, ForeignKey, Index, Integer, JSON,
     String, Text,
 )
 from sqlalchemy.orm import Session, relationship
@@ -68,6 +68,14 @@ UNIDENTIFIED_FLEX_FP = "00000000"
 #: The dev kit's device type. Everything in this module is scoped to it: a
 #: force plate has no flex and no fingerprint, so none of this applies.
 DEVKIT_TYPE_ID = "18"
+
+#: What kind of holder a kit went to (Dyno #885, firmware `docs/SHIPPING.md`
+#: §4). `customer`: sold, theirs. `loan`: ours, lent until `owner_return_by`
+#: (required). `evaluation`: ours, sent to decide a purchase (return date
+#: optional). `internal`: an Axioforce person or bench.
+DEVKIT_OWNER_KINDS = ("customer", "loan", "evaluation", "internal")
+#: The kinds that are expected back, and so may carry `owner_return_by`.
+DEVKIT_RETURNABLE_KINDS = ("loan", "evaluation")
 
 #: `18.5fdb3916` and the dashed bucket spelling `18-5fdb3916`.
 _DEVICE_ID_RE = re.compile(r"^([0-9a-fA-F]{2})[-.]([0-9a-fA-F]{8})$")
@@ -365,6 +373,14 @@ class Devkit(Base):
     #: the writer supplied the real hand-over date.
     owner_since = Column(DateTime(timezone=True), nullable=True)
     owner_note = Column(Text, nullable=True)
+    #: What kind of holder (Dyno #885, `firmware docs/SHIPPING.md` §4): one
+    #: of `DEVKIT_OWNER_KINDS`. NULL on an owner recorded before kinds
+    #: existed; readers treat NULL as external (not `internal`).
+    owner_kind = Column(String, nullable=True)
+    #: The order / loan / evaluation reference the kit went out under.
+    owner_ref = Column(String, nullable=True)
+    #: When a `loan` (required) or `evaluation` (optional) is due back.
+    owner_return_by = Column(Date, nullable=True)
 
     assignment_history = relationship(
         "DevkitAssignmentHistory",
@@ -596,6 +612,9 @@ class Devkit(Base):
                   owner_org: Optional[str] = None,
                   owner_note: Optional[str] = None,
                   owner_since: Optional[datetime] = None,
+                  owner_kind: Optional[str] = None,
+                  owner_ref: Optional[str] = None,
+                  owner_return_by: Optional[date] = None,
                   changed_by: Optional[str] = None,
                   reason: Optional[str] = None
                   ) -> Optional["DevkitOwnerHistory"]:
@@ -603,19 +622,31 @@ class Devkit(Base):
 
         The arguments are the WHOLE new owner state, not a patch: a field left
         None is cleared, and all three of uid / email / org None clears the
-        owner. Blank strings count as None; the email is lowercased.
+        owner (and with it note, date, kind, ref and return-by). Blank strings
+        count as None; the email and the kind are lowercased.
+
+        `owner_kind` must be one of `DEVKIT_OWNER_KINDS` or None (unknown).
+        `owner_return_by` is required for a `loan`, allowed for an
+        `evaluation`, and refused for any other kind (including None): only a
+        kit we expect back has a date it is due. Sending a kind, ref or
+        return-by with no holder is refused rather than silently dropped.
 
         Appends a `devkit_owner_history` row, and returns it, when the holder
-        (uid, email or org) actually changes. Re-sending the current holder
-        with a different note or date updates those and records nothing --
-        the history is of who had the unit, not of edits to the note.
+        (uid, email or org) or the kind actually changes -- an evaluation
+        converting to a sale for the same person is a change of holding.
+        Re-sending the current holder and kind with a different note, date,
+        ref or return-by updates those and records nothing -- the history is
+        of who had the unit and on what terms, not of edits to the note.
         `owner_since` defaults to now on a change and is cleared with the
         owner.
 
-        Refuses (ValueError) a unit keyed on the UNIDENTIFIED flex sentinel:
-        `18.00000000` names no unit, so nobody can own it. Also raises on an
-        email with no `@`. Does NOT commit; the caller owns the transaction,
-        so the columns and the history row land together or not at all.
+        Raises ValueError for a unit keyed on the UNIDENTIFIED flex sentinel
+        (`18.00000000` names no unit, so nobody can own it), an email with no
+        `@`, an unknown kind, and the return-by rules above. It does NOT
+        refuse an unshippable unit: the server gate is advisory (Stephen,
+        2026-10-12) and the shipping report is the detective control. Does
+        NOT commit; the caller owns the transaction, so the columns and the
+        history row land together or not at all.
         """
         if flex_fp_from_device_id(self.device_axf_id) is None:
             raise ValueError(
@@ -637,12 +668,45 @@ class Devkit(Base):
             if "@" not in new["owner_email"]:
                 raise ValueError(
                     f"owner_email {owner_email!r} is not an email address")
-        old = {f: getattr(self, f) for f in self._OWNER_FIELDS}
         clearing = all(v is None for v in new.values())
-        changed = new != old
+
+        kind = clean(owner_kind)
+        kind = kind.lower() if kind is not None else None
+        ref = clean(owner_ref)
+        if isinstance(owner_return_by, datetime):
+            owner_return_by = owner_return_by.date()
+        if clearing:
+            if (kind is not None or ref is not None
+                    or owner_return_by is not None):
+                raise ValueError(
+                    "owner_kind / owner_ref / owner_return_by need a holder "
+                    "(owner_uid, owner_email or owner_org); a body with no "
+                    "holder clears the owner")
+        else:
+            if kind is not None and kind not in DEVKIT_OWNER_KINDS:
+                raise ValueError(
+                    f"owner_kind {owner_kind!r} is not one of "
+                    f"{', '.join(DEVKIT_OWNER_KINDS)}")
+            if kind == "loan" and owner_return_by is None:
+                raise ValueError(
+                    "owner_return_by is required for a loan: a loan is a kit "
+                    "we expect back by a date")
+            if (owner_return_by is not None
+                    and kind not in DEVKIT_RETURNABLE_KINDS):
+                raise ValueError(
+                    f"owner_return_by is only for a kit we expect back "
+                    f"({' / '.join(DEVKIT_RETURNABLE_KINDS)}), not kind "
+                    f"{kind!r}")
+
+        old = {f: getattr(self, f) for f in self._OWNER_FIELDS}
+        old_kind = self.owner_kind
+        changed = new != old or kind != old_kind
 
         for field, value in new.items():
             setattr(self, field, value)
+        self.owner_kind = kind
+        self.owner_ref = ref
+        self.owner_return_by = owner_return_by
         self.owner_note = None if clearing else clean(owner_note)
         if clearing:
             self.owner_since = None
@@ -659,16 +723,21 @@ class Devkit(Base):
             previous_owner_uid=old["owner_uid"],
             previous_owner_email=old["owner_email"],
             previous_owner_org=old["owner_org"],
+            previous_owner_kind=old_kind,
             new_owner_uid=new["owner_uid"],
             new_owner_email=new["owner_email"],
             new_owner_org=new["owner_org"],
+            new_owner_kind=kind,
+            new_owner_ref=ref,
+            new_owner_return_by=owner_return_by,
             changed_at=current_time(),
             changed_by=changed_by, reason=reason)
         db.add(entry)
+        before = old["owner_email"] or old["owner_uid"] or "(none)"
+        after = new["owner_email"] or new["owner_uid"] or "(none)"
         logger.info(
-            f"Devkit {self.device_axf_id}: owner "
-            f"{old['owner_email'] or old['owner_uid'] or '(none)'} -> "
-            f"{new['owner_email'] or new['owner_uid'] or '(none)'}")
+            f"Devkit {self.device_axf_id}: owner {before} [{old_kind}] -> "
+            f"{after} [{kind}]")
         return entry
 
     def to_dict(self):
@@ -695,6 +764,9 @@ class Devkit(Base):
             "owner_org": self.owner_org,
             "owner_since": self.owner_since,
             "owner_note": self.owner_note,
+            "owner_kind": self.owner_kind,
+            "owner_ref": self.owner_ref,
+            "owner_return_by": self.owner_return_by,
         }
 
 
@@ -756,8 +828,8 @@ Index("ix_devkit_history_device_time",
 class DevkitOwnerHistory(Base):
     """Append-only record of a change of holder (Dyno #874).
 
-    One row per set / transfer / clear, written by `Devkit.set_owner` in the
-    same transaction as the `devkits` owner columns. A set has the previous
+    One row per set / transfer / clear / change of kind, written by
+    `Devkit.set_owner` in the same transaction as the `devkits` owner columns. A set has the previous
     fields NULL, a clear has the new fields NULL. Separate from
     `devkit_assignment_history`, which is about boards in the unit, not
     people holding it. Nothing here is ever updated or deleted.
@@ -773,6 +845,13 @@ class DevkitOwnerHistory(Base):
     new_owner_uid = Column(String, nullable=True)
     new_owner_email = Column(String, nullable=True)
     new_owner_org = Column(String, nullable=True)
+    #: Kind / terms (Dyno #885). NULL on rows written before kinds existed.
+    #: Only the kind has a "previous": a change of kind is a change of
+    #: holding, while ref / return-by are the terms of the new holding.
+    previous_owner_kind = Column(String, nullable=True)
+    new_owner_kind = Column(String, nullable=True)
+    new_owner_ref = Column(String, nullable=True)
+    new_owner_return_by = Column(Date, nullable=True)
     changed_at = Column(DateTime(timezone=True), nullable=False,
                         default=current_time)
     changed_by = Column(String, nullable=True)
@@ -1159,6 +1238,9 @@ class DevkitResponse(BaseModel):
     owner_org: Optional[str] = None
     owner_since: Optional[datetime] = None
     owner_note: Optional[str] = None
+    owner_kind: Optional[str] = None
+    owner_ref: Optional[str] = None
+    owner_return_by: Optional[date] = None
     #: True when `flex_fp` is the UNIDENTIFIED sentinel. Carried explicitly so
     #: a consumer cannot miss it by reading `flex_fp` as an ordinary value.
     flex_unidentified: bool = False
@@ -1195,6 +1277,14 @@ class DevkitOwnerRequest(BaseModel):
     #: The real hand-over date, if known; defaults to now on a change.
     owner_since: Optional[datetime] = None
     owner_note: Optional[str] = None
+    #: One of `DEVKIT_OWNER_KINDS` (400 otherwise), or null for unknown.
+    #: Validated in `Devkit.set_owner`, not here, so a bad kind is a 400 with
+    #: a sentence rather than a 422.
+    owner_kind: Optional[str] = None
+    #: Order / loan / evaluation reference.
+    owner_ref: Optional[str] = None
+    #: Required for `loan`, allowed for `evaluation`, refused otherwise.
+    owner_return_by: Optional[date] = None
     changed_by: Optional[str] = None
     reason: Optional[str] = None
 
@@ -1210,9 +1300,48 @@ class DevkitOwnerHistoryResponse(BaseModel):
     new_owner_uid: Optional[str] = None
     new_owner_email: Optional[str] = None
     new_owner_org: Optional[str] = None
+    previous_owner_kind: Optional[str] = None
+    new_owner_kind: Optional[str] = None
+    new_owner_ref: Optional[str] = None
+    new_owner_return_by: Optional[date] = None
     changed_at: datetime
     changed_by: Optional[str] = None
     reason: Optional[str] = None
+
+
+class DevkitShippedUnshippableItem(BaseModel):
+    """A kit held outside Axioforce whose `shippability()` is false."""
+    device_axf_id: str
+    owner_uid: Optional[str] = None
+    owner_email: Optional[str] = None
+    owner_org: Optional[str] = None
+    owner_kind: Optional[str] = None
+    owner_ref: Optional[str] = None
+    owner_since: Optional[datetime] = None
+    #: `shippability()["reason"]`.
+    reason: str
+
+
+class DevkitOverdueItem(BaseModel):
+    """A loan or evaluation past its `owner_return_by`."""
+    device_axf_id: str
+    owner_uid: Optional[str] = None
+    owner_email: Optional[str] = None
+    owner_org: Optional[str] = None
+    owner_kind: str
+    owner_ref: Optional[str] = None
+    owner_since: Optional[datetime] = None
+    owner_return_by: date
+    days_overdue: int
+
+
+class DevkitShippingReportResponse(BaseModel):
+    """`GET /devkit/devkits/report/shipping` (Dyno #885): the detective
+    control that makes the advisory owner PUT acceptable."""
+    #: The date `overdue` was judged against (server UTC).
+    today: date
+    shipped_unshippable: List[DevkitShippedUnshippableItem]
+    overdue: List[DevkitOverdueItem]
 
 
 class DevkitCaptureResponse(BaseModel):
