@@ -9,7 +9,7 @@ neural-network-job-distribution and calibration-monitoring platform that runs on
 storage). It is a backend-agnostic core (no FastAPI, no Streamlit) holding the single source of truth for the
 database schema, the calibration-procedure registry, and the Tigris storage layout. It is consumed by its two
 siblings — `../axio-server` (the FastAPI API + job queue) and `../axio-web` (the dashboard) — as an **editable git
-dependency pinned to a tagged version** (currently `v0.66.0`). Because both downstreams pin a tag, **all schema and
+dependency pinned to a tagged version** (currently `v0.68.0`). Because both downstreams pin a tag, **all schema and
 shared-logic changes are upstream-first: change, test, and tag here, then bump the pin downstream.** See the
 workspace root `../CLAUDE.md` for cross-repo conventions and the upstream-first rule.
 
@@ -32,7 +32,7 @@ bump-my-version bump patch                    # bump version (also: minor / majo
 `update_axio_common.sh` automates the full release: prompts for a bump type, bumps + commits + tags, then
 reinstalls the new version into the `axio-server` and `axio-dash` conda envs.
 
-- **Package name**: `axio_common` (pyproject `[project]`); current version **0.66.0**.
+- **Package name**: `axio_common` (pyproject `[project]`); current version **0.68.0**.
 - **Build**: setuptools/wheel; packages auto-discovered (`tool.setuptools.packages.find`).
 - **Deps**: SQLAlchemy>=2.0, pydantic>=2.0, psycopg2-binary, boto3>=1.34, dotenv.
 
@@ -80,7 +80,8 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   (`ASSEMBLED_BASELINE_KINDS`) hold per-device baseline snapshots. `assembled_baselines.device_axf_id` is
   deliberately **not** a FK to `force_plates` — load-cell DAQ devices (types `05`/`14`) push `kind='global'`
   baselines without a plate row; the ForcePlate↔AssembledBaseline relationship uses an explicit `foreign()`
-  join and still ORM-cascades on plate delete.
+  join and still ORM-cascades on plate delete. FluxLite live tests push `live_test_a` / `live_test_b` (v0.68.0):
+  a raw zero-load snapshot at the first tare at each plate location, matched to its session by device and time.
 - **`Device`** (`devices`, PK `axf_id`) — the trainable unit; `type_id`/`type_name`, best-force/best-moment run
   pointers + metrics (JSON), anomaly counters. One Device → many `Job`s.
 - **`Job`** (`jobs`, PK uuid) → **`Run`** (`runs`) — the NN training job queue. Job carries `status`

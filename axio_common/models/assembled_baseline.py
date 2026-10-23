@@ -3,7 +3,8 @@ Per-device baseline snapshots — full-device "all channels at zero load" captur
 taken at chip initialization (kind='initialization_assembled' or
 'initialization_unassembled'), post-assembly (kind='assembled') from
 Calibration Setup, and on demand as a level-surface environment reference
-(kind='global', used for the gbd-* calibration-CSV delta columns). For force
+(kind='global', used for the gbd-* calibration-CSV delta columns), and at each
+FluxLite live-test location (kind='live_test_a' / 'live_test_b'). For force
 plates this pairs with ForcePlate so drift between manufacturing ->
 initialization -> assembled lifecycle stages is queryable per load cell.
 
@@ -47,6 +48,11 @@ ASSEMBLED_BASELINE_KINDS = (
     # columns used by environment-conditioned NN training (Neuralizer
     # USE_BASELINE_DELTA).
     'global',
+    # FluxLite live test: raw-stream zero-load snapshot (same frame as
+    # 'assembled') taken at the first tare at each plate location (A / B).
+    # Matched to its live_test_sessions row by device + started_at..ended_at.
+    'live_test_a',
+    'live_test_b',
 )
 
 
