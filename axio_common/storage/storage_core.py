@@ -61,6 +61,11 @@ least as new as the file. An un-uploaded capture (or a re-capture that rewrote
 the file after its last upload) has no fresh sidecar and is never touched. See
 cache_gc.py for the policy.
 
+Invalidation: a cache hit never re-checks the bucket, except for keys listed in
+the bucket's `_config/cache_invalidations.json` manifest (objects rewritten
+under the same key). See "bucket-driven cache invalidation" below and
+`python -m axio_common.storage.invalidate`.
+
 NOTE: requires boto3. Add it to axio-common's pyproject.toml dependencies before shipping.
 """
 from __future__ import annotations
@@ -71,6 +76,7 @@ import json as _json
 import os
 import re
 import shutil
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -218,6 +224,154 @@ def _maybe_run_cache_gc() -> None:
     runs in a background daemon thread. Local-only (no bucket calls). Never
     raises."""
     _cache_gc.maybe_run_gc(DEFAULT_CACHE_ROOT, logger=_gc_logger.info)
+
+
+# ---------- bucket-driven cache invalidation ----------
+#
+# The cache never re-checks the bucket on a hit, so an object OVERWRITTEN under
+# the same key would be served stale forever by every machine that cached it.
+# The bucket therefore carries a small manifest naming the keys that were
+# rewritten and the ETag of their CURRENT object:
+#
+#   _config/cache_invalidations.json
+#   {"version": 1,
+#    "entries": {"<bucket key>": {"etag": "<current ETag, no quotes>",
+#                                 "reason": "...", "at": "<iso>"}}}
+#
+# On a cache hit for a key listed there, the ETag recorded in the file's
+# verification sidecar (written on every download) is compared with the
+# manifest's; on a mismatch, or no recorded ETag (legacy sidecar / upload), the
+# file is re-downloaded. A hit on any other key costs nothing: the manifest is
+# fetched at most once per INVALIDATION_TTL_S per process, lazily on the first
+# hit, and any failure to fetch it fails open (treated as empty, logged once).
+# Written by the operator with `python -m axio_common.storage.invalidate`.
+
+INVALIDATION_MANIFEST_KEY = "_config/cache_invalidations.json"
+INVALIDATION_TTL_S = 600.0
+
+_inv_lock = threading.Lock()
+_inv_entries: dict[str, str] = {}      # key -> normalized current ETag
+_inv_loaded_at: Optional[float] = None  # time.monotonic() of the last load attempt
+_inv_error_logged = False
+_inv_unverified_logged: set[str] = set()
+_inv_still_mismatched_logged: set[str] = set()
+
+
+def _reset_invalidation_manifest() -> None:
+    """Forget the in-memory manifest (tests; forces a reload on next use)."""
+    global _inv_entries, _inv_loaded_at, _inv_error_logged
+    with _inv_lock:
+        _inv_entries = {}
+        _inv_loaded_at = None
+        _inv_error_logged = False
+        _inv_unverified_logged.clear()
+        _inv_still_mismatched_logged.clear()
+
+
+def parse_invalidation_manifest(raw: bytes | str) -> dict[str, str]:
+    """{key: normalized ETag} from a manifest body. Raises ValueError on a body
+    that is not a version-1 manifest; malformed entries are skipped."""
+    data = _json.loads(raw)
+    if not isinstance(data, dict) or data.get("version") != 1:
+        raise ValueError("cache invalidation manifest: unsupported version")
+    entries = data.get("entries") or {}
+    if not isinstance(entries, dict):
+        raise ValueError("cache invalidation manifest: 'entries' is not an object")
+    out: dict[str, str] = {}
+    for k, v in entries.items():
+        if isinstance(k, str) and isinstance(v, dict):
+            e = _cache_gc._normalize_etag(v.get("etag"))
+            if e:
+                out[k] = e
+    return out
+
+
+def _fetch_invalidation_manifest_bytes() -> Optional[bytes]:
+    """Raw manifest body, or None when the manifest object does not exist.
+    Raises on any other failure."""
+    if _use_server_backend():
+        info = _server_post_json(
+            "/storage/presigned-download",
+            {"key": INVALIDATION_MANIFEST_KEY, "expires_in": 300},
+        )
+        try:
+            with urllib.request.urlopen(info["url"], timeout=30) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+            raise
+    try:
+        resp = _client_singleton().get_object(Bucket=_bucket(), Key=INVALIDATION_MANIFEST_KEY)
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
+            return None
+        raise
+    return resp["Body"].read()
+
+
+def _invalidation_entries() -> dict[str, str]:
+    """The manifest's {key: ETag}, loaded at most once per INVALIDATION_TTL_S.
+    Never raises: a failed load is logged once and treated as empty (and is
+    not retried until the TTL lapses, so a bucket outage costs one attempt per
+    TTL, not one per cache hit)."""
+    global _inv_entries, _inv_loaded_at, _inv_error_logged
+    with _inv_lock:
+        now = time.monotonic()
+        if _inv_loaded_at is not None and (now - _inv_loaded_at) < INVALIDATION_TTL_S:
+            return _inv_entries
+        try:
+            raw = _fetch_invalidation_manifest_bytes()
+            _inv_entries = parse_invalidation_manifest(raw) if raw else {}
+        except Exception as e:  # noqa: BLE001 -- must never break ensure_local
+            _inv_entries = {}
+            if not _inv_error_logged:
+                _inv_error_logged = True
+                _gc_logger.warning(
+                    "cache invalidation manifest %s could not be loaded (%s); "
+                    "treating it as empty", INVALIDATION_MANIFEST_KEY, e,
+                )
+        _inv_loaded_at = now
+        return _inv_entries
+
+
+def _cache_hit_is_stale(key: str, local: Path) -> bool:
+    """True when the cached `local` copy of `key` must be re-downloaded because
+    the bucket's invalidation manifest says the key was rewritten and the
+    sidecar does not record the current ETag.
+
+    Only a VERIFIED file (fresh sidecar: its content is proven to be a bucket
+    copy) is ever replaced. An un-verified file may be an un-uploaded capture
+    or re-capture staged in the cache; replacing it would destroy data, so it
+    is kept and a warning is logged once per key."""
+    want = _invalidation_entries().get(key)
+    if want is None:
+        return False
+    if not _cache_gc.is_verified(local):
+        if key not in _inv_unverified_logged:
+            _inv_unverified_logged.add(key)
+            _gc_logger.warning(
+                "%s is listed as rewritten in the bucket, but the cached copy %s "
+                "is not verified as a bucket copy (possibly an un-uploaded "
+                "capture); keeping it", key, local,
+            )
+        return False
+    return _cache_gc.read_verified_etag(local) != want
+
+
+def _note_post_refresh_etag(key: str, etag: Optional[str]) -> None:
+    """After an invalidation-driven re-download, warn once if the bucket's ETag
+    still differs from the manifest's: the object was rewritten again after
+    the manifest entry, so every hit will re-download until the entry is
+    refreshed (re-run the invalidate helper)."""
+    want = _inv_entries.get(key)
+    got = _cache_gc._normalize_etag(etag)
+    if want and got and got != want and key not in _inv_still_mismatched_logged:
+        _inv_still_mismatched_logged.add(key)
+        _gc_logger.warning(
+            "%s: bucket ETag %s != invalidation manifest ETag %s; refresh the "
+            "manifest entry or every cache hit will re-download it", key, got, want,
+        )
 
 
 # ---------- key construction ----------
@@ -693,6 +847,14 @@ class _CountingStream:
             close()
 
 
+def _response_etag(resp) -> Optional[str]:
+    """ETag header of an HTTP response, or None."""
+    try:
+        return resp.headers.get("ETag")
+    except AttributeError:
+        return None
+
+
 def _content_length(resp) -> Optional[int]:
     try:
         n = resp.headers.get("Content-Length")
@@ -774,12 +936,21 @@ def ensure_local(
     _maybe_run_cache_gc()
     _eff_root = cache_root if cache_root is not None else DEFAULT_CACHE_ROOT
     local = cache_path_for_key(key, cache_root)
+    refreshing = False
     if local.exists():
-        # Cache hit: re-stamp so recency tracks real use (GC's in-flight floor),
-        # and keep the verification sidecar in step.
-        _cache_gc.mark_used(local, _eff_root)
-        _emit_bytes(on_bytes, key, None, None, cached=True)
-        return local
+        if _cache_hit_is_stale(key, local):
+            # The bucket rewrote this key since we cached it. Fall through to a
+            # normal download; it lands via tmp + atomic replace, so a failed
+            # download raises and leaves the old copy (and its sidecar, which
+            # still marks it stale) in place rather than deleting it first.
+            refreshing = True
+            _gc_logger.info("re-downloading %s: invalidated in the bucket", key)
+        else:
+            # Cache hit: re-stamp so recency tracks real use (GC's in-flight
+            # floor), and keep the verification sidecar in step.
+            _cache_gc.mark_used(local, _eff_root)
+            _emit_bytes(on_bytes, key, None, None, cached=True)
+            return local
     local.parent.mkdir(parents=True, exist_ok=True)
     tmp = local.with_suffix(local.suffix + ".part")
 
@@ -787,6 +958,9 @@ def ensure_local(
     total = size_hint
     if on_bytes is not None and total is None:
         total = object_size(key)
+
+    # ETag of the object actually transferred, set by the transfer closure.
+    etag_box: list[Optional[str]] = [None]
 
     if _use_server_backend():
         # Server-mediated: small POST for the URL, then a direct GET to
@@ -803,6 +977,7 @@ def ensure_local(
             _emit_bytes(on_bytes, key, None, total)
             if key.endswith(".csv.gz"):
                 with urllib.request.urlopen(url, timeout=300) as resp:
+                    etag_box[0] = _response_etag(resp)
                     src = _CountingStream(
                         resp, on_bytes, key, _content_length(resp) or total,
                     )
@@ -810,13 +985,18 @@ def ensure_local(
                         shutil.copyfileobj(gz, dst, length=1024 * 1024)
             else:
                 with urllib.request.urlopen(url, timeout=300) as resp, open(tmp, "wb") as dst:
+                    etag_box[0] = _response_etag(resp)
                     _copy_with_progress(
                         resp, dst, on_bytes, key, _content_length(resp) or total,
                     )
 
         _transfer_with_retry(_server_transfer, tmp)
         tmp.replace(local)
-        _cache_gc.record_verified(local, _eff_root)  # downloaded => confirmed in bucket
+        # downloaded => confirmed in bucket; the ETag lets a later hit honor
+        # the invalidation manifest.
+        _cache_gc.record_verified(local, _eff_root, etag=etag_box[0])
+        if refreshing:
+            _note_post_refresh_etag(key, etag_box[0])
         return local
 
     s3 = _client_singleton()
@@ -825,6 +1005,7 @@ def ensure_local(
         _emit_bytes(on_bytes, key, None, total)  # reset per attempt (see above)
         if key.endswith(".csv.gz"):
             resp = s3.get_object(Bucket=_bucket(), Key=key)
+            etag_box[0] = resp.get("ETag")
             src = _CountingStream(
                 resp["Body"], on_bytes, key, resp.get("ContentLength") or total,
             )
@@ -837,11 +1018,23 @@ def ensure_local(
             if on_bytes is not None:
                 def cb(delta: int) -> None:  # noqa: F811
                     _emit_bytes(on_bytes, key, delta, total)
+            # download_file returns no metadata, so HEAD for the ETag. HEAD
+            # BEFORE the transfer: if the object is rewritten mid-download we
+            # record the older ETag, which can only cause an extra re-download
+            # later, never a stale hit. A failed HEAD records "unknown".
+            try:
+                etag_box[0] = s3.head_object(Bucket=_bucket(), Key=key).get("ETag")
+            except Exception:  # noqa: BLE001
+                etag_box[0] = None
             s3.download_file(_bucket(), key, str(tmp), Callback=cb)
 
     _transfer_with_retry(_s3_transfer, tmp)
     tmp.replace(local)
-    _cache_gc.record_verified(local, _eff_root)  # downloaded => confirmed in bucket
+    # downloaded => confirmed in bucket; the ETag lets a later hit honor the
+    # invalidation manifest.
+    _cache_gc.record_verified(local, _eff_root, etag=etag_box[0])
+    if refreshing:
+        _note_post_refresh_etag(key, etag_box[0])
     return local
 
 

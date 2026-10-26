@@ -33,6 +33,11 @@ deletion. The sidecar closes that hole: the re-capture rewrites the file with a
 newer mtime than its stale sidecar, so it reads as un-verified and is never
 touched until it is itself uploaded (which refreshes the sidecar).
 
+The sidecar's content (not its mtime) also records the bucket ETag of the
+object a download came from (`{"etag": "..."}`; empty = unknown, as in legacy
+sidecars and after uploads). GC ignores it; storage_core uses it to honor the
+bucket's cache-invalidation manifest on a cache hit.
+
 A consequence: GC reclaims nothing it cannot prove was uploaded/downloaded, so a
 legacy cache populated before this shipped is GC-inert until its files are next
 accessed (safe — it under-evicts, never over-evicts). It also does NOT detect an
@@ -80,6 +85,7 @@ Configuration (all optional; read at call time):
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -213,17 +219,45 @@ def _is_verified(path: Path, file_mtime: float) -> bool:
         return False
 
 
-def record_verified(path, cache_root=None, *, now: Optional[float] = None) -> None:
+def _normalize_etag(etag) -> Optional[str]:
+    """Canonical form of an S3 ETag for comparison: surrounding quotes and a
+    weak 'W/' prefix stripped. None/empty -> None."""
+    if etag is None:
+        return None
+    e = str(etag).strip()
+    if e.startswith("W/"):
+        e = e[2:]
+    e = e.strip('"').strip()
+    return e or None
+
+
+def record_verified(
+    path,
+    cache_root=None,
+    *,
+    now: Optional[float] = None,
+    etag: Optional[str] = None,
+) -> None:
     """Mark `path` as confirmed-in-bucket. Call AFTER a confirmed upload or
     download completes. Writes/refreshes the sidecar to `now` (>= the file's
-    mtime). No-op if `path` is outside cache_root. Never raises."""
+    mtime). No-op if `path` is outside cache_root. Never raises.
+
+    The sidecar's CONTENT records the bucket ETag of the object the file came
+    from (`{"etag": "..."}`), so a later cache hit can tell whether the bucket
+    has since rewritten that key (see storage_core's cache-invalidation
+    manifest). `etag=None` (an upload, or a download whose ETag was not
+    available) writes an empty sidecar, which reads as "ETag unknown": the
+    file is still verified for GC, which only looks at the mtime."""
     try:
         p = Path(path)
         if not _under_root(p, cache_root):
             return
         sc = _sidecar_for(p)
+        norm = _normalize_etag(etag)
         try:
-            sc.touch()
+            # Always rewrite the content: a stale ETag from an earlier download
+            # must not survive an upload of new bytes under the same key.
+            sc.write_text(json.dumps({"etag": norm}) if norm else "", encoding="utf-8")
         except OSError:
             return
         t = time.time() if now is None else now
@@ -233,6 +267,34 @@ def record_verified(path, cache_root=None, *, now: Optional[float] = None) -> No
             pass
     except Exception:
         pass
+
+
+def read_verified_etag(path) -> Optional[str]:
+    """The bucket ETag recorded in `path`'s sidecar, or None when there is no
+    sidecar, the sidecar is a legacy empty marker, or it can't be parsed.
+    Never raises. Says nothing about freshness; pair with is_verified()."""
+    try:
+        raw = _sidecar_for(Path(path)).read_text(encoding="utf-8").strip()
+    except (OSError, ValueError):
+        return None
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return _normalize_etag(raw)  # tolerate a bare single-line ETag
+    if isinstance(data, dict):
+        return _normalize_etag(data.get("etag"))
+    return None
+
+
+def is_verified(path) -> bool:
+    """Public form of the GC rule: `path` exists and its sidecar is at least as
+    new as it. Never raises."""
+    try:
+        return _is_verified(Path(path), Path(path).stat().st_mtime)
+    except OSError:
+        return False
 
 
 def mark_used(path, cache_root=None, *, now: Optional[float] = None) -> None:

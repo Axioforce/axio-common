@@ -150,9 +150,10 @@ legacy artifacts.)
 
 ## What the cache is _not_
 
-- **Not authoritative.** The bucket wins on conflict. If `ensure_local`
-  finds a stale local copy, today it returns the stale copy — there is no
-  ETag check yet (see _Open items_).
+- **Not authoritative, but not self-refreshing either.** A cache hit never
+  asks the bucket whether the object changed. An object overwritten under the
+  same key is only picked up if the key is listed in the bucket's
+  invalidation manifest (next section).
 - **Garbage-collected (`cache_gc.py`).** `ensure_local`/`upload_file` trigger a
   throttled, background sweep: evict whole sessions/model-dirs past the TTL
   (`MAX_AGE_DAYS`), then oldest-first until under `MAX_GB`. **A file is deletable
@@ -172,12 +173,53 @@ legacy artifacts.)
 - **Not a sync target.** It is populated lazily, per-key, on read. There is
   no `sync_all()` and no background refresh.
 
+## Rewriting objects: the invalidation manifest
+
+Objects are normally write-once. When one has to be **overwritten under the
+same key** (e.g. a capture re-derived with a fix), every machine that cached
+the old bytes would keep using them, so the bucket carries a manifest naming
+the rewritten keys:
+
+```
+_config/cache_invalidations.json
+{"version": 1,
+ "entries": {"<bucket key>": {"etag": "<ETag of the CURRENT object>", "reason": "...", "at": "<iso>"}}}
+```
+
+- Every download records the object's bucket ETag in the file's verification
+  sidecar (`{"etag": "..."}`; empty = unknown, as in legacy sidecars and after
+  an upload). The sidecar's mtime rules for GC are unchanged.
+- On a cache hit for a key listed in the manifest, `ensure_local` re-downloads
+  when the recorded ETag differs from the manifest's (or is unknown). The new
+  copy replaces the old one atomically; if the download fails it raises and the
+  old copy stays. All other entry points (`download_files`,
+  `download_session`, the pickers) go through `ensure_local`.
+- **An un-verified local file is never replaced** (no sidecar, or one older
+  than the file): it may be an un-uploaded capture. A warning is logged once.
+- **Cost:** the manifest is fetched lazily, at most once per 10 minutes per
+  process, on either backend (direct `get_object`, or a presigned GET via
+  axio-server). A hit on an unlisted key makes no request. A missing manifest
+  is empty; any other fetch error is logged once and treated as empty (fail
+  open, so a bucket hiccup never breaks a cache hit).
+
+Operator flow, after overwriting the objects (needs direct bucket creds):
+
+```
+python -m axio_common.storage.invalidate <key> [<key> ...] --reason "..." [--dry-run]
+```
+
+It HEADs each key for its current ETag and merges the entries into the manifest
+(existing entries kept, same key replaced; a missing key aborts with nothing
+written). **If an object is rewritten again later, re-run it for that key**: a
+stale manifest ETag makes every hit on that key re-download (logged once).
+Don't run two at once; the read-modify-write is not atomic.
+
 ## Open items
 
 - `local_session_dir(device_id, iso_date)` helper so the DAQ and helper
   scripts can resolve the cache path without poking at private functions.
 - ~~LRU eviction by total bytes~~ — done, see `cache_gc.py`.
-- ETag-aware staleness check in `ensure_local` for cases where the bucket
-  copy is updated after the local copy was written.
+- ~~ETag-aware staleness check~~ — done for rewritten keys listed in the
+  invalidation manifest (see above); unlisted keys are still never re-checked.
 - File picker widget (Tk) for helper scripts that today use
   `filedialog.askopenfilenames` against local paths.
