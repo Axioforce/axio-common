@@ -162,6 +162,14 @@ and `download_session()` pre-declares every size from one size-aware LIST (`sess
 `list_prefix_sizes()`, S3 backend only — `{}` means "unknown", never "empty"). This exists because a session is
 often a few files where one is hundreds of MB: a files-completed counter parks on "2/4" for minutes and is
 indistinguishable from a hang.
+**Bucket-driven cache invalidation** (v0.68.0): a cache hit never re-checks the bucket, so an object
+overwritten under the same key is announced in the manifest `_config/cache_invalidations.json`
+(`{"version": 1, "entries": {key: {etag, reason, at}}}`, written with `python -m axio_common.storage.invalidate
+<key>... --reason "..." [--dry-run]`, direct creds only). Every download records the bucket ETag as the
+verification sidecar's content (`cache_gc.record_verified(etag=)`; empty = unknown); on a hit for a listed key whose
+recorded ETag differs, `ensure_local()` re-downloads (atomic replace). Un-verified local files are never replaced.
+The manifest loads lazily, at most once per 10 min per process, on both backends, and fails open. Details:
+`storage/README.md`.
 `storage/picker.py` provides Tk bucket-browser dialogs (opt-in; needs tkinter).
 Picker loading is piece-wise (v0.37.0): `load_types_and_devices()` fans the per-type device listings out over a
 thread pool, streams chunks to the UI as each type completes, and caches the result for 5 min (instant reopen);
