@@ -608,7 +608,9 @@ def list_dates(device_id: str) -> list[str]:
         # with the s3 path. (The daemon flow doesn't care, but the picker does.)
         return _server_get_json(f"/storage/sessions/{quote(device_id)}/dates")
     children = list_top_dirs(device_prefix(device_id))
-    dates = sorted(c for c in children if c != "models")
+    # Only session dates: a dev kit also has 'axiosaurus_characterization/',
+    # which is not a session and used to be offered as one (list_grid_dates).
+    dates = sorted(c for c in children if ISO_DATE_RE.match(c))
     if "models" in children:
         dates.append("models")
     return dates

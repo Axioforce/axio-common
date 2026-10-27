@@ -70,3 +70,11 @@ def test_server_backend_walks_files_endpoint(monkeypatch):
     monkeypatch.setattr(sc, "_server_get_json", lambda p: {"prefixes": [], "objects": [], "truncated": True})
     with pytest.raises(RuntimeError):
         sc.list_grid(DEV)
+
+
+def test_list_dates_offers_only_sessions(monkeypatch):
+    """A dev kit's grid subtree is not a session date (it was, before 0.69.1)."""
+    monkeypatch.setattr(sc, "_use_server_backend", lambda: False)
+    monkeypatch.setattr(sc, "list_top_dirs",
+                        lambda prefix="": ["2026-10-15", "2026-10-19", "axiosaurus_characterization", "models"])
+    assert sc.list_dates(DEV) == ["2026-10-15", "2026-10-19", "models"]
