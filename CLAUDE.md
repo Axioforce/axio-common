@@ -9,7 +9,7 @@ neural-network-job-distribution and calibration-monitoring platform that runs on
 storage). It is a backend-agnostic core (no FastAPI, no Streamlit) holding the single source of truth for the
 database schema, the calibration-procedure registry, and the Tigris storage layout. It is consumed by its two
 siblings — `../axio-server` (the FastAPI API + job queue) and `../axio-web` (the dashboard) — as an **editable git
-dependency pinned to a tagged version** (currently `v0.69.0`). Because both downstreams pin a tag, **all schema and
+dependency pinned to a tagged version**. Because both downstreams pin a tag, **all schema and
 shared-logic changes are upstream-first: change, test, and tag here, then bump the pin downstream.** See the
 workspace root `../CLAUDE.md` for cross-repo conventions and the upstream-first rule.
 
@@ -32,7 +32,7 @@ bump-my-version bump patch                    # bump version (also: minor / majo
 `update_axio_common.sh` automates the full release: prompts for a bump type, bumps + commits + tags, then
 reinstalls the new version into the `axio-server` and `axio-dash` conda envs.
 
-- **Package name**: `axio_common` (pyproject `[project]`); current version **0.69.0**.
+- **Package name**: `axio_common` (pyproject `[project]`); current version: see `pyproject.toml`.
 - **Build**: setuptools/wheel; packages auto-discovered (`tool.setuptools.packages.find`).
 - **Deps**: SQLAlchemy>=2.0, pydantic>=2.0, psycopg2-binary, boto3>=1.34, dotenv.
 
@@ -80,7 +80,7 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   (`ASSEMBLED_BASELINE_KINDS`) hold per-device baseline snapshots. `assembled_baselines.device_axf_id` is
   deliberately **not** a FK to `force_plates` — load-cell DAQ devices (types `05`/`14`) push `kind='global'`
   baselines without a plate row; the ForcePlate↔AssembledBaseline relationship uses an explicit `foreign()`
-  join and still ORM-cascades on plate delete. FluxLite live tests push `live_test_a` / `live_test_b` (v0.69.0):
+  join and still ORM-cascades on plate delete. FluxLite live tests push `live_test_a` / `live_test_b` (v0.70.0):
   a raw zero-load snapshot at the first tare at each plate location, matched to its session by device and time.
 - **`Device`** (`devices`, PK `axf_id`) — the trainable unit; `type_id`/`type_name`, best-force/best-moment run
   pointers + metrics (JSON), anomaly counters. One Device → many `Job`s.
@@ -170,6 +170,7 @@ verification sidecar's content (`cache_gc.record_verified(etag=)`; empty = unkno
 recorded ETag differs, `ensure_local()` re-downloads (atomic replace). Un-verified local files are never replaced.
 The manifest loads lazily, at most once per 10 min per process, on both backends, and fails open. Details:
 `storage/README.md`.
+**Characterization-grid captures** (v0.69.0, Dyno #1107): Axiosaurus grid runs live outside the train/test sessions, at `<type>/<device>/axiosaurus_characterization/<iso-date>/<capture>.csv.gz` with the run's g-code + sidecar JSON under `<iso-date>/axiosaurus/`. `list_grid_dates()`, `list_grid(device, date=None)` (captures + every sidecar of the device, since a sidecar can list another date's capture) and `download_grid_captures(keys)` (captures + all the device's sidecars; refuses a key the bucket does not list) work on both backends; the server backend walks axio-server's `/storage/files`. Before 0.69.0 a grid capture was gunzipped into a file still named `.csv.gz`; it now caches as `.csv`, and `bucket_key_for_cache_path` inverts it.
 `storage/picker.py` provides Tk bucket-browser dialogs (opt-in; needs tkinter).
 Picker loading is piece-wise (v0.37.0): `load_types_and_devices()` fans the per-type device listings out over a
 thread pool, streams chunks to the UI as each type completes, and caches the result for 5 min (instant reopen);

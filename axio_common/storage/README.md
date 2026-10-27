@@ -44,6 +44,16 @@ Resulting layout:
 
 `models/` is mirrored verbatim — no date or extension transforms.
 
+Characterization-grid captures (v0.69.0) keep their bucket shape, dotted date and gunzipped:
+
+```
+<cache>/<type>/<device_id>/axiosaurus_characterization/<dotted-date>/<capture>.csv
+<cache>/<type>/<device_id>/axiosaurus_characterization/<dotted-date>/axiosaurus/<run>.{json,gcode}
+```
+
+They are not session files: a job names them (Neuralizer `DEVKIT_GRID_FILES`) and
+`download_grid_captures()` fetches them with every sidecar of the device.
+
 ### Mapping a cache path back to a bucket key (recovery / backfill)
 
 `cache_path_for_key()` maps bucket→cache; its exact inverse is
