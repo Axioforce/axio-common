@@ -416,6 +416,17 @@ def make_key(device_id: str, date: str, kind: str, filename: str) -> str:
 # is mirrored verbatim — no extra layer.
 _INPUT_KIND_RE = re.compile(r"^(?P<head>[^/]+/[^/]+/[^/]+)/(?P<kind>train|test)/(?P<rest>.+)$")
 
+# Characterization-grid (Axiosaurus) captures sit in their own subtree, one
+# directory per capture date, with the run's g-code + sidecar JSON beside them:
+#   <type>/<device>/axiosaurus_characterization/<iso-date>/<capture>.csv.gz
+#   <type>/<device>/axiosaurus_characterization/<iso-date>/axiosaurus/<run>.{json,gcode}
+# They are not train/test session files, so a job names them explicitly
+# (Neuralizer DEVKIT_GRID_FILES, #1107).
+GRID_DIR = "axiosaurus_characterization"
+GRID_SIDECAR_DIR = "axiosaurus"
+_GRID_CAPTURE_RE = re.compile(
+    rf"^(?P<head>[^/]+/[^/]+/{GRID_DIR}/[^/]+)/(?P<name>[^/]+)\.csv\.gz$")
+
 
 def cache_path_for_key(key: str, cache_root: Path | None = None) -> Path:
     """Map a bucket key to the local cache path.
@@ -433,6 +444,12 @@ def cache_path_for_key(key: str, cache_root: Path | None = None) -> Path:
         if rest.endswith(".csv.gz"):
             rest = rest[:-3]
         return root / m.group("head") / "calibration_data" / m.group("kind") / rest
+    # A grid capture is gunzipped by ensure_local like an input file, so its
+    # cache name must lose '.gz' too (it used to keep it: plain CSV bytes under
+    # a .csv.gz name, which pandas then fails to gunzip).
+    g = _GRID_CAPTURE_RE.match(translated)
+    if g:
+        return root / g.group("head") / (g.group("name") + ".csv")
     return root / translated
 
 
@@ -497,6 +514,13 @@ def bucket_key_for_cache_path(cache_path, cache_root: Path | None = None) -> str
         # 3) restore the .csv.gz extension a gunzipped cache file lost.
         if parts[-1].endswith(".csv"):
             parts[-1] = parts[-1] + ".gz"
+    # 4) grid subtree: its date dir is one level deeper, and a capture (a
+    #    .csv directly in the date dir) gets its .csv.gz back.
+    if len(parts) >= 5 and parts[2] == GRID_DIR:
+        if DOTTED_DATE_RE.match(parts[3]):
+            parts[3] = _iso_from_dotted(parts[3])
+        if len(parts) == 5 and parts[4].endswith(".csv"):
+            parts[4] = parts[4] + ".gz"
     return "/".join(parts)
 
 
@@ -1155,6 +1179,98 @@ def download_session(
     )
     root = Path(cache_root) if cache_root else DEFAULT_CACHE_ROOT
     return root / device_type(device_id) / device_id / _dotted_from_iso(date)
+
+
+# ---------- characterization-grid captures ----------
+
+def grid_prefix(device_id: str, date: Optional[str] = None) -> str:
+    """'<type>/<device>/axiosaurus_characterization/' or, with an ISO date,
+    that date's directory."""
+    p = f"{device_prefix(device_id)}{GRID_DIR}/"
+    return f"{p}{date}/" if date else p
+
+
+def is_grid_capture_key(key: str) -> bool:
+    return _GRID_CAPTURE_RE.match(key) is not None
+
+
+@dataclass
+class GridListing:
+    """A device's grid captures and the sidecars that describe them.
+
+    A sidecar may list captures of another date (one Axiosaurus run can span
+    midnight), so a consumer that parses captures needs the sidecars of
+    every grid date of the device, not just the capture's own."""
+    captures: list[str]
+    sidecars: list[str]
+
+    def all_keys(self) -> list[str]:
+        return list(self.captures) + list(self.sidecars)
+
+
+def _list_keys_recursive(prefix: str) -> list[str]:
+    """Every object key under prefix, either backend. The server backend walks
+    axio-server's /storage/files one level at a time."""
+    if not _use_server_backend():
+        return [k for k in list_prefix(prefix, recursive=True) if not is_folder_marker(k)]
+    from urllib.parse import quote
+    out: list[str] = []
+    todo = [prefix]
+    while todo:
+        p = todo.pop()
+        data = _server_get_json(f"/storage/files?prefix={quote(p)}&max_keys=1000")
+        if data.get("truncated"):
+            raise RuntimeError(f"/storage/files truncated the listing of {p!r} "
+                               f"(over 1000 entries); refusing a partial grid listing")
+        out += [o["key"] for o in data.get("objects", []) if not is_folder_marker(o["key"])]
+        todo += list(data.get("prefixes", []))
+    return sorted(out)
+
+
+def list_grid_dates(device_id: str) -> list[str]:
+    """ISO dates that have a grid directory for this device, sorted."""
+    keys = _list_keys_recursive(grid_prefix(device_id))
+    base = grid_prefix(device_id)
+    return sorted({k.removeprefix(base).split("/", 1)[0] for k in keys
+                   if ISO_DATE_RE.match(k.removeprefix(base).split("/", 1)[0])})
+
+
+def list_grid(device_id: str, date: Optional[str] = None) -> GridListing:
+    """Grid capture keys (of one date, or all) and every sidecar key of the
+    device's grid (g-code + JSON under any '<date>/axiosaurus/')."""
+    keys = _list_keys_recursive(grid_prefix(device_id))
+    captures = [k for k in keys if is_grid_capture_key(k)
+                and (date is None or k.startswith(grid_prefix(device_id, date)))]
+    sidecars = [k for k in keys if f"/{GRID_SIDECAR_DIR}/" in k.removeprefix(grid_prefix(device_id))]
+    return GridListing(captures=sorted(captures), sidecars=sorted(sidecars))
+
+
+def download_grid_captures(
+    capture_keys: Sequence[str],
+    cache_root: Path | None = None,
+    *,
+    progress: Callable[[int, int, Optional[str]], None] | None = None,
+    on_bytes: "ByteProgress | None" = None,
+    workers: int = 8,
+) -> list[Path]:
+    """Download the named grid captures plus every sidecar of their devices,
+    and return the captures' local paths (gunzipped '.csv', listing order).
+
+    Raises ValueError on a key that is not a grid capture, and FileNotFoundError
+    on one the bucket does not list (a job naming a missing capture must fail,
+    not train on less data)."""
+    bad = [k for k in capture_keys if not is_grid_capture_key(k)]
+    if bad:
+        raise ValueError(f"not grid capture keys: {bad}")
+    devices = sorted({k.split("/")[1] for k in capture_keys})
+    listings = {d: list_grid(d) for d in devices}
+    missing = [k for k in capture_keys if k not in listings[k.split("/")[1]].captures]
+    if missing:
+        raise FileNotFoundError(f"grid captures not in the bucket: {missing}")
+    sidecars = sorted({s for g in listings.values() for s in g.sidecars})
+    paths = download_files(list(capture_keys) + sidecars, cache_root=cache_root,
+                           progress=progress, on_bytes=on_bytes, workers=workers)
+    return paths[:len(capture_keys)]
 
 
 # ---------- upload ----------

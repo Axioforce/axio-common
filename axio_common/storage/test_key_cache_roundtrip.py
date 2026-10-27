@@ -15,7 +15,21 @@ CANONICAL_KEYS = [
     "16/16-00000001/2026-07-27/test/16-00000001-TE-45DBH_07.27.2026.csv.gz",
     "16/16-00000001/2026-07-27/tests.txt",
     "16/16-00000001/models/07.27.2026/nn_results/force_vector/x/16-00000001-y-f.h5",
+    "18/18-8c665420/axiosaurus_characterization/2026-10-20/18-8c665420-AC-CYLg729Ad4r4_10.20.2026.csv.gz",
+    "18/18-8c665420/axiosaurus_characterization/2026-10-20/axiosaurus/"
+    "18-8c665420-AC-cylindergrid-CYLg729Ad4r4_10.20.2026_729.json",
 ]
+
+
+def test_grid_capture_cache_name_is_gunzipped(tmp_path):
+    """ensure_local gunzips every .csv.gz, so a grid capture's cache file must be
+    named .csv (it kept .csv.gz before 0.69.0: plain CSV under a gzip name)."""
+    key = "18/18-8c665420/axiosaurus_characterization/2026-10-20/x_10.20.2026.csv.gz"
+    p = sc.cache_path_for_key(key, cache_root=tmp_path)
+    assert p == tmp_path / "18/18-8c665420/axiosaurus_characterization/10.20.2026/x_10.20.2026.csv"
+    side = "18/18-8c665420/axiosaurus_characterization/2026-10-20/axiosaurus/r.json"
+    assert (sc.cache_path_for_key(side, cache_root=tmp_path)
+            == tmp_path / "18/18-8c665420/axiosaurus_characterization/10.20.2026/axiosaurus/r.json")
 
 
 @pytest.mark.parametrize("key", CANONICAL_KEYS)
