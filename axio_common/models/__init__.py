@@ -15,6 +15,7 @@ from .load_cell import (
 )
 from .devkit import (
     Devkit, DevkitAssignmentHistory, DevkitOwnerHistory, EolResult,
+    AutoEolAttempt,
     DevkitRequest, DevkitUpdateRequest,
     DevkitOwnerRequest, DevkitOwnerHistoryResponse,
     DevkitShippedUnshippableItem, DevkitOverdueItem,
@@ -102,7 +103,8 @@ __all__ = [
     "DevkitRecordResponse",
     "DEVKIT_TYPE_ID", "UNIDENTIFIED_FLEX_FP", "unidentified_flex",
     "flex_fp_from_device_id", "is_devkit_id", "model_artifact_name",
-    "EolResult", "EolResultRequest", "EolResultResponse",
+    "EolResult",
+    "AutoEolAttempt", "EolResultRequest", "EolResultResponse",
     "ShippabilityResponse", "EOL_SCHEMA", "EOL_CHECKS",
     "format_flex_fp", "device_id_from_flex_fp", "shippability",
     "UNIDENTIFIED_TMP_UID", "format_tmp_uid", "format_mcu_uid",

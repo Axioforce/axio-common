@@ -1027,6 +1027,51 @@ Index("ix_eol_results_device_time",
       EolResult.device_axf_id, EolResult.completed_at)
 
 
+class AutoEolAttempt(Base):
+    """The automatic-EOL sweep's retry state for one (unit, job, SDK) triple.
+
+    The sweep scores a calibration job's whole test split, which can take
+    minutes and, for a large split, most of the API machine's memory. Its
+    retry delay used to live in process memory, so a crash *during* an
+    evaluation erased the very delay meant to stop the next attempt: on
+    2026-10-29 one job's evaluation ran out of memory, the machine restarted,
+    and every boot retried it at once (an OOM loop every 6-7 minutes).
+
+    So an attempt is written and committed here **before** the evaluation
+    starts, with `not_before` already pushed out. A crash leaves the delay
+    in force; a clean outcome updates or removes the row. Both API machines
+    read the same row, so neither re-runs what the other just tried.
+
+    Keyed on `sdk_commit` as well as the job, matching the sweep's own
+    "one automatic row per job per SDK version" rule: a new vendored SDK owes
+    every unit a fresh evaluation and starts with a clean slate.
+    """
+
+    __tablename__ = "auto_eol_attempts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    device_axf_id = Column(String, nullable=False)
+    #: `jobs.id` of the scored job. Not a ForeignKey, like the rest of this
+    #: module: retry state must never block deleting a job.
+    job_id = Column(String, nullable=False)
+    sdk_commit = Column(String, nullable=False)
+
+    #: Evaluations started for this triple, including ones that crashed.
+    attempts = Column(Integer, nullable=False, default=0)
+    #: The sweep does not start another evaluation before this time.
+    not_before = Column(DateTime(timezone=True), nullable=False)
+    #: The current delay, seconds; doubles per attempt up to the sweep's cap.
+    delay_s = Column(Integer, nullable=False)
+    last_started_at = Column(DateTime(timezone=True), nullable=False)
+    #: "started" (in progress, or crashed), "pending" or "error".
+    last_outcome = Column(String, nullable=False)
+    last_error = Column(Text, nullable=True)
+
+
+Index("ux_auto_eol_attempts_key", AutoEolAttempt.device_axf_id,
+      AutoEolAttempt.job_id, AutoEolAttempt.sdk_commit, unique=True)
+
+
 def _eol_when(row: "EolResult") -> str:
     when = row.completed_at or row.recorded_at
     return f" on {when.strftime('%Y-%m-%d')}" if when else ""
