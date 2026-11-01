@@ -29,6 +29,11 @@ from .devkit import (
     UNIDENTIFIED_TMP_UID, format_tmp_uid, format_mcu_uid,
     AUTO_EOL_TOOL, AUTO_EOL_CHECKS, is_automatic_eol,
 )
+from .model_outputs import (
+    OUTPUT_FORCE, OUTPUT_MOMENT, OUTPUT_COP, OUTPUT_FIELD,
+    DEFAULT_REQUIRED_OUTPUTS, REQUIRED_OUTPUTS_BY_TYPE, DEVKIT_RECIPE_OUTPUTS,
+    required_outputs, job_recipe, job_outputs,
+)
 from .calibration_session import (
     CalibrationSession, CalibrationSessionCalibrator, CalibrationSessionDate,
     CALIBRATION_SESSION_STATUSES,
@@ -108,6 +113,9 @@ __all__ = [
     "ShippabilityResponse", "EOL_SCHEMA", "EOL_CHECKS",
     "format_flex_fp", "device_id_from_flex_fp", "shippability",
     "UNIDENTIFIED_TMP_UID", "format_tmp_uid", "format_mcu_uid",
+    "OUTPUT_FORCE", "OUTPUT_MOMENT", "OUTPUT_COP", "OUTPUT_FIELD",
+    "DEFAULT_REQUIRED_OUTPUTS", "REQUIRED_OUTPUTS_BY_TYPE", "DEVKIT_RECIPE_OUTPUTS",
+    "required_outputs", "job_recipe", "job_outputs",
     "AUTO_EOL_TOOL", "AUTO_EOL_CHECKS", "is_automatic_eol",
     "CalibrationActivity", "CalibrationFamilyActivity",
     "CalibrationFamilyDay", "CalibrationActivityDayOverride",

@@ -1406,14 +1406,23 @@ class DevkitCaptureResponse(BaseModel):
 class DevkitCalibrationResponse(BaseModel):
     """The support answer: when, against what, which model, what metrics.
 
-    One of these per (device, model_type) — a unit has a force model and may
-    have a moment model, and they are separate training jobs with separate
-    metrics. `calibrated_at` is the completion of the run that produced the
-    model, which is the date that belongs on a calibration record; the job
+    One of these per model OUTPUT the unit needs (`model_outputs.
+    required_outputs`): a dev kit's force, COP and field models (#1296). One
+    set-recipe job (`recipe` 'set_xf_v1') trains all three, so the three rows
+    can name the same job; `model_type` is that job's own column ('force' for
+    a set job) and `output` is the model the row is about. COP and field rows
+    carry no metrics: the job's run metrics are the force model's, and each
+    output's own evaluation is `best_model/<output>/eval.json` in the bucket.
+    `calibrated_at` is the completion of the run that produced the model,
+    which is the date that belongs on a calibration record; the job
     `timestamp` is the human-scannable job UID and is the integer operators
     read, never a formatted date.
     """
+    #: 'force' | 'cop' | 'field' (dev kit); 'force' | 'moment' (plates).
+    output: str
     model_type: str
+    #: The job config's DEVKIT_RECIPE, when it ran one.
+    recipe: Optional[str] = None
     model_artifact: Optional[str] = None
     calibrated_at: Optional[datetime] = None
     job_id: str

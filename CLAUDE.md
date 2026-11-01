@@ -121,6 +121,13 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   `new_owner_return_by`); a ref or return-date change alone writes no history. `set_owner` never refuses an
   unshippable kit — the gate is advisory; `DevkitShippingReportResponse` is the shape of axio-server's
   shipped-unshippable / overdue report. Never store anything keyed on the sentinel — use `unidentified_flex()` / `flex_fp_from_device_id()`.
+- **Model outputs** (v0.71.0, Dyno #1296, `models/model_outputs.py`, pure) — `required_outputs(type_id)` is the model set a
+  unit needs before testing: plates `force` + `moment`, dev kit (type 18) `force` + `cop` + `field`. `job_outputs(model_type,
+  config)` is what a job produced: its `DEVKIT_RECIPE`'s outputs when the config names one (`set_xf_v1` → all three,
+  `force_xf_v1` → force), else its `model_type`; an unlisted recipe returns None (unknown, never guessed). A set job is
+  stored as `model_type` 'force', which is why `model_type` alone cannot answer this. `DEVKIT_RECIPE_OUTPUTS` mirrors the
+  Neuralizer's `RECIPES`: add a line here when a recipe is added there. `DevkitCalibrationResponse` is one row per
+  output (`output` field; `model_type` stays the job's column).
 - **`Client`** (`clients`) — registered daemon/client hosts (heartbeat tracking via `utils/shared.py`).
 
 Most models also define paired pydantic `*Request`/`*Response` schemas in the same file for the API to reuse.
