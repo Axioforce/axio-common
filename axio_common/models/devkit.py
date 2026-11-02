@@ -382,6 +382,25 @@ class Devkit(Base):
     #: When a `loan` (required) or `evaluation` (optional) is due back.
     owner_return_by = Column(Date, nullable=True)
 
+    # --- pad stiffness, latest measurement (Dyno #1301) ------------------
+    #
+    # A COPY of the newest `devkit_pad_stiffness` row, so "what stiffness is
+    # this kit" is one row read. Written only by
+    # `devkit_pad_stiffness.record_pad_stiffness`, in the same transaction as
+    # the history row it copies. All NULL = never measured.
+
+    #: 'measured' | 'not_measured'.
+    pad_stiffness_status = Column(String, nullable=True)
+    pad_stiffness_reason = Column(Text, nullable=True)
+    #: Shore A equivalent of E (Gent); extrapolated below ~20A.
+    pad_shore_a = Column(Float, nullable=True)
+    pad_e_mpa = Column(Float, nullable=True)
+    pad_k_n_per_mm = Column(Float, nullable=True)
+    pad_stiffness_tip_mm = Column(Float, nullable=True)
+    pad_stiffness_uncertainty_pct = Column(Float, nullable=True)
+    pad_stiffness_n_presses = Column(Integer, nullable=True)
+    pad_stiffness_measured_at = Column(DateTime(timezone=True), nullable=True)
+
     assignment_history = relationship(
         "DevkitAssignmentHistory",
         back_populates="devkit",
@@ -767,6 +786,15 @@ class Devkit(Base):
             "owner_kind": self.owner_kind,
             "owner_ref": self.owner_ref,
             "owner_return_by": self.owner_return_by,
+            "pad_stiffness_status": self.pad_stiffness_status,
+            "pad_stiffness_reason": self.pad_stiffness_reason,
+            "pad_shore_a": self.pad_shore_a,
+            "pad_e_mpa": self.pad_e_mpa,
+            "pad_k_n_per_mm": self.pad_k_n_per_mm,
+            "pad_stiffness_tip_mm": self.pad_stiffness_tip_mm,
+            "pad_stiffness_uncertainty_pct": self.pad_stiffness_uncertainty_pct,
+            "pad_stiffness_n_presses": self.pad_stiffness_n_presses,
+            "pad_stiffness_measured_at": self.pad_stiffness_measured_at,
         }
 
 
@@ -1286,6 +1314,16 @@ class DevkitResponse(BaseModel):
     owner_kind: Optional[str] = None
     owner_ref: Optional[str] = None
     owner_return_by: Optional[date] = None
+    #: Latest pad-stiffness measurement (#1301); all None = never measured.
+    pad_stiffness_status: Optional[str] = None
+    pad_stiffness_reason: Optional[str] = None
+    pad_shore_a: Optional[float] = None
+    pad_e_mpa: Optional[float] = None
+    pad_k_n_per_mm: Optional[float] = None
+    pad_stiffness_tip_mm: Optional[float] = None
+    pad_stiffness_uncertainty_pct: Optional[float] = None
+    pad_stiffness_n_presses: Optional[int] = None
+    pad_stiffness_measured_at: Optional[datetime] = None
     #: True when `flex_fp` is the UNIDENTIFIED sentinel. Carried explicitly so
     #: a consumer cannot miss it by reading `flex_fp` as an ordinary value.
     flex_unidentified: bool = False

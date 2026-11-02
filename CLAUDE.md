@@ -121,6 +121,20 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   `new_owner_return_by`); a ref or return-date change alone writes no history. `set_owner` never refuses an
   unshippable kit — the gate is advisory; `DevkitShippingReportResponse` is the shape of axio-server's
   shipped-unshippable / overdue report. Never store anything keyed on the sentinel — use `unidentified_flex()` / `flex_fp_from_device_id()`.
+- **Pad stiffness** (v0.72.0, Dyno #1301, `models/devkit_pad_stiffness.py`) — `DevkitPadStiffness`
+  (`devkit_pad_stiffness`) is the append-only history of a flex's pad-stiffness measurements, keyed by
+  `device_axf_id` (`18.<flex_fp>`; no FK): `status` (`measured` | `not_measured`, the latter with a `reason`,
+  never a guessed value), `tip_mm`, `k_n_per_mm`/`k_iqr`, `e_mpa`/`e_iqr`, `shore_a` (Gent equivalent),
+  `uncertainty_pct`, `n_presses`, `per_tip` (every tip's pooled k), `captures` / `skipped_captures`,
+  `capture_fingerprint` (what axio-server's sweep compares to decide a recompute), `job_timestamp` (the newest
+  completed job's integer UID, nullable), `method` + `method_commit`, `source` (`auto` | `backfill`; `manual`
+  reserved for a durometer reading), `measured_at`. The newest row is copied onto `devkits.pad_*`
+  (`pad_stiffness_status`, `pad_stiffness_reason`, `pad_shore_a`, `pad_e_mpa`, `pad_k_n_per_mm`,
+  `pad_stiffness_tip_mm`, `pad_stiffness_uncertainty_pct`, `pad_stiffness_n_presses`,
+  `pad_stiffness_measured_at`; all NULL = never measured) by `record_pad_stiffness()` only, in the same
+  transaction (creates the devkits row if missing; refuses the sentinel; does not commit).
+  `PadStiffnessSummary.from_devkit()` / `DevkitPadStiffnessResponse` are the API shapes. Never record the pad
+  material, brand or grade — measured stiffness only.
 - **Model outputs** (v0.71.0, Dyno #1296, `models/model_outputs.py`, pure) — `required_outputs(type_id)` is the model set a
   unit needs before testing: plates `force` + `moment`, dev kit (type 18) `force` + `cop` + `field`. `job_outputs(model_type,
   config)` is what a job produced: its `DEVKIT_RECIPE`'s outputs when the config names one (`set_xf_v1` → all three,

@@ -29,6 +29,13 @@ from .devkit import (
     UNIDENTIFIED_TMP_UID, format_tmp_uid, format_mcu_uid,
     AUTO_EOL_TOOL, AUTO_EOL_CHECKS, is_automatic_eol,
 )
+from .devkit_pad_stiffness import (
+    DevkitPadStiffness, DevkitPadStiffnessResponse, PadStiffnessSummary,
+    PAD_STIFFNESS_STATUSES, PAD_STIFFNESS_MEASURED, PAD_STIFFNESS_NOT_MEASURED,
+    PAD_STIFFNESS_SOURCES, PAD_STIFFNESS_SOURCE_AUTO,
+    PAD_STIFFNESS_SOURCE_BACKFILL, PAD_STIFFNESS_SOURCE_MANUAL,
+    PAD_SUMMARY_FIELDS, record_pad_stiffness,
+)
 from .model_outputs import (
     OUTPUT_FORCE, OUTPUT_MOMENT, OUTPUT_COP, OUTPUT_FIELD,
     DEFAULT_REQUIRED_OUTPUTS, REQUIRED_OUTPUTS_BY_TYPE, DEVKIT_RECIPE_OUTPUTS,
@@ -109,7 +116,12 @@ __all__ = [
     "DEVKIT_TYPE_ID", "UNIDENTIFIED_FLEX_FP", "unidentified_flex",
     "flex_fp_from_device_id", "is_devkit_id", "model_artifact_name",
     "EolResult",
-    "AutoEolAttempt", "EolResultRequest", "EolResultResponse",
+    "AutoEolAttempt",
+    "DevkitPadStiffness", "DevkitPadStiffnessResponse", "PadStiffnessSummary",
+    "PAD_STIFFNESS_STATUSES", "PAD_STIFFNESS_MEASURED",
+    "PAD_STIFFNESS_NOT_MEASURED", "PAD_STIFFNESS_SOURCES",
+    "PAD_STIFFNESS_SOURCE_AUTO", "PAD_STIFFNESS_SOURCE_BACKFILL",
+    "PAD_STIFFNESS_SOURCE_MANUAL", "PAD_SUMMARY_FIELDS", "record_pad_stiffness", "EolResultRequest", "EolResultResponse",
     "ShippabilityResponse", "EOL_SCHEMA", "EOL_CHECKS",
     "format_flex_fp", "device_id_from_flex_fp", "shippability",
     "UNIDENTIFIED_TMP_UID", "format_tmp_uid", "format_mcu_uid",
