@@ -382,6 +382,25 @@ class Devkit(Base):
     #: When a `loan` (required) or `evaluation` (optional) is due back.
     owner_return_by = Column(Date, nullable=True)
 
+    # --- pad stiffness, latest measurement (Dyno #1301) ------------------
+    #
+    # A COPY of the newest `devkit_pad_stiffness` row, so "what stiffness is
+    # this kit" is one row read. Written only by
+    # `devkit_pad_stiffness.record_pad_stiffness`, in the same transaction as
+    # the history row it copies. All NULL = never measured.
+
+    #: 'measured' | 'not_measured'.
+    pad_stiffness_status = Column(String, nullable=True)
+    pad_stiffness_reason = Column(Text, nullable=True)
+    #: Shore A equivalent of E (Gent); extrapolated below ~20A.
+    pad_shore_a = Column(Float, nullable=True)
+    pad_e_mpa = Column(Float, nullable=True)
+    pad_k_n_per_mm = Column(Float, nullable=True)
+    pad_stiffness_tip_mm = Column(Float, nullable=True)
+    pad_stiffness_uncertainty_pct = Column(Float, nullable=True)
+    pad_stiffness_n_presses = Column(Integer, nullable=True)
+    pad_stiffness_measured_at = Column(DateTime(timezone=True), nullable=True)
+
     assignment_history = relationship(
         "DevkitAssignmentHistory",
         back_populates="devkit",
@@ -767,6 +786,15 @@ class Devkit(Base):
             "owner_kind": self.owner_kind,
             "owner_ref": self.owner_ref,
             "owner_return_by": self.owner_return_by,
+            "pad_stiffness_status": self.pad_stiffness_status,
+            "pad_stiffness_reason": self.pad_stiffness_reason,
+            "pad_shore_a": self.pad_shore_a,
+            "pad_e_mpa": self.pad_e_mpa,
+            "pad_k_n_per_mm": self.pad_k_n_per_mm,
+            "pad_stiffness_tip_mm": self.pad_stiffness_tip_mm,
+            "pad_stiffness_uncertainty_pct": self.pad_stiffness_uncertainty_pct,
+            "pad_stiffness_n_presses": self.pad_stiffness_n_presses,
+            "pad_stiffness_measured_at": self.pad_stiffness_measured_at,
         }
 
 
@@ -1027,6 +1055,51 @@ Index("ix_eol_results_device_time",
       EolResult.device_axf_id, EolResult.completed_at)
 
 
+class AutoEolAttempt(Base):
+    """The automatic-EOL sweep's retry state for one (unit, job, SDK) triple.
+
+    The sweep scores a calibration job's whole test split, which can take
+    minutes and, for a large split, most of the API machine's memory. Its
+    retry delay used to live in process memory, so a crash *during* an
+    evaluation erased the very delay meant to stop the next attempt: on
+    2026-10-29 one job's evaluation ran out of memory, the machine restarted,
+    and every boot retried it at once (an OOM loop every 6-7 minutes).
+
+    So an attempt is written and committed here **before** the evaluation
+    starts, with `not_before` already pushed out. A crash leaves the delay
+    in force; a clean outcome updates or removes the row. Both API machines
+    read the same row, so neither re-runs what the other just tried.
+
+    Keyed on `sdk_commit` as well as the job, matching the sweep's own
+    "one automatic row per job per SDK version" rule: a new vendored SDK owes
+    every unit a fresh evaluation and starts with a clean slate.
+    """
+
+    __tablename__ = "auto_eol_attempts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    device_axf_id = Column(String, nullable=False)
+    #: `jobs.id` of the scored job. Not a ForeignKey, like the rest of this
+    #: module: retry state must never block deleting a job.
+    job_id = Column(String, nullable=False)
+    sdk_commit = Column(String, nullable=False)
+
+    #: Evaluations started for this triple, including ones that crashed.
+    attempts = Column(Integer, nullable=False, default=0)
+    #: The sweep does not start another evaluation before this time.
+    not_before = Column(DateTime(timezone=True), nullable=False)
+    #: The current delay, seconds; doubles per attempt up to the sweep's cap.
+    delay_s = Column(Integer, nullable=False)
+    last_started_at = Column(DateTime(timezone=True), nullable=False)
+    #: "started" (in progress, or crashed), "pending" or "error".
+    last_outcome = Column(String, nullable=False)
+    last_error = Column(Text, nullable=True)
+
+
+Index("ux_auto_eol_attempts_key", AutoEolAttempt.device_axf_id,
+      AutoEolAttempt.job_id, AutoEolAttempt.sdk_commit, unique=True)
+
+
 def _eol_when(row: "EolResult") -> str:
     when = row.completed_at or row.recorded_at
     return f" on {when.strftime('%Y-%m-%d')}" if when else ""
@@ -1241,6 +1314,16 @@ class DevkitResponse(BaseModel):
     owner_kind: Optional[str] = None
     owner_ref: Optional[str] = None
     owner_return_by: Optional[date] = None
+    #: Latest pad-stiffness measurement (#1301); all None = never measured.
+    pad_stiffness_status: Optional[str] = None
+    pad_stiffness_reason: Optional[str] = None
+    pad_shore_a: Optional[float] = None
+    pad_e_mpa: Optional[float] = None
+    pad_k_n_per_mm: Optional[float] = None
+    pad_stiffness_tip_mm: Optional[float] = None
+    pad_stiffness_uncertainty_pct: Optional[float] = None
+    pad_stiffness_n_presses: Optional[int] = None
+    pad_stiffness_measured_at: Optional[datetime] = None
     #: True when `flex_fp` is the UNIDENTIFIED sentinel. Carried explicitly so
     #: a consumer cannot miss it by reading `flex_fp` as an ordinary value.
     flex_unidentified: bool = False
@@ -1361,14 +1444,23 @@ class DevkitCaptureResponse(BaseModel):
 class DevkitCalibrationResponse(BaseModel):
     """The support answer: when, against what, which model, what metrics.
 
-    One of these per (device, model_type) — a unit has a force model and may
-    have a moment model, and they are separate training jobs with separate
-    metrics. `calibrated_at` is the completion of the run that produced the
-    model, which is the date that belongs on a calibration record; the job
+    One of these per model OUTPUT the unit needs (`model_outputs.
+    required_outputs`): a dev kit's force, COP and field models (#1296). One
+    set-recipe job (`recipe` 'set_xf_v1') trains all three, so the three rows
+    can name the same job; `model_type` is that job's own column ('force' for
+    a set job) and `output` is the model the row is about. COP and field rows
+    carry no metrics: the job's run metrics are the force model's, and each
+    output's own evaluation is `best_model/<output>/eval.json` in the bucket.
+    `calibrated_at` is the completion of the run that produced the model,
+    which is the date that belongs on a calibration record; the job
     `timestamp` is the human-scannable job UID and is the integer operators
     read, never a formatted date.
     """
+    #: 'force' | 'cop' | 'field' (dev kit); 'force' | 'moment' (plates).
+    output: str
     model_type: str
+    #: The job config's DEVKIT_RECIPE, when it ran one.
+    recipe: Optional[str] = None
     model_artifact: Optional[str] = None
     calibrated_at: Optional[datetime] = None
     job_id: str

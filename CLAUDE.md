@@ -80,7 +80,7 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   (`ASSEMBLED_BASELINE_KINDS`) hold per-device baseline snapshots. `assembled_baselines.device_axf_id` is
   deliberately **not** a FK to `force_plates` — load-cell DAQ devices (types `05`/`14`) push `kind='global'`
   baselines without a plate row; the ForcePlate↔AssembledBaseline relationship uses an explicit `foreign()`
-  join and still ORM-cascades on plate delete. FluxLite live tests push `live_test_a` / `live_test_b` (v0.70.0):
+  join and still ORM-cascades on plate delete. FluxLite live tests push `live_test_a` / `live_test_b` (v0.73.0):
   a raw zero-load snapshot at the first tare at each plate location, matched to its session by device and time.
 - **`Device`** (`devices`, PK `axf_id`) — the trainable unit; `type_id`/`type_name`, best-force/best-moment run
   pointers + metrics (JSON), anomaly counters. One Device → many `Job`s.
@@ -107,6 +107,7 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
 - **`CalibrationBucketSession.weight_class`** (v0.63.0) — `'heavy' | 'light'`, the calibrator's weight class for that calibration day. A complete plate calibration is one heavy day and one light day in either order; NULL on legacy rows, where the day-number rule still applies.
 - **`CalibrationWorkSession`** (`calibration_work_sessions`, v0.63.0) — a start→stop stretch of work a person does on a calibration day (FK → `calibration_bucket_sessions`, CASCADE). `ended_at` NULL = open. A *calibration* is the day; a *work session* is the time spent on it — one day can have several. Started and ended explicitly from Flux2; nothing is inferred from timers or file counts.
 - **`PlateDecision`** (`plate_decisions`, `PLATE_DECISIONS = flag | recalibrate | rework | ready_to_ship | hold | scrap`, v0.61.0) — append-only record of the calls a human makes on a plate that is awaiting a decision (failed live test, customer return, or flagged by hand): what, who (typed name), when, why, plus nullable links to the live-test session and delivery the decider was looking at. `device_axf_id` is **not** an FK to `devices` (same reasoning as `ForcePlate`). A decision is an *event* in axio-server's plate lifecycle rule — the newest event names the stage — so recording one moves the plate immediately.
+- **`AutoEolAttempt`** (`auto_eol_attempts`, v0.70.0, Dyno #1255, `models/devkit.py`) — axio-server's automatic-EOL sweep's retry state, one row per (`device_axf_id`, `job_id`, `sdk_commit`): `attempts`, `not_before`, `delay_s`, `last_started_at`, `last_outcome` (`started` | `pending` | `error`), `last_error`. The sweep commits an attempt BEFORE it evaluates, so a crash mid-evaluation keeps the delay (it used to live in process memory, and an OOM looped on every boot, 2026-10-29). No FK to `jobs`.
 - **`Devkit`** (`devkits`, PK `device_axf_id` = `18.<flex_fp>`, `models/devkit.py`) — dev-kit unit record: board
   fingerprints (`flex_fp`/`tmp_uid`/`mcu_uid`; swaps → append-only `DevkitAssignmentHistory`), provisioning fields,
   and `EolResult` (append-only; `shippability()` derives the ship gate). **Owner** (v0.66.0, Dyno #874):
@@ -121,6 +122,27 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   `new_owner_return_by`); a ref or return-date change alone writes no history. `set_owner` never refuses an
   unshippable kit — the gate is advisory; `DevkitShippingReportResponse` is the shape of axio-server's
   shipped-unshippable / overdue report. Never store anything keyed on the sentinel — use `unidentified_flex()` / `flex_fp_from_device_id()`.
+- **Pad stiffness** (v0.72.0, Dyno #1301, `models/devkit_pad_stiffness.py`) — `DevkitPadStiffness`
+  (`devkit_pad_stiffness`) is the append-only history of a flex's pad-stiffness measurements, keyed by
+  `device_axf_id` (`18.<flex_fp>`; no FK): `status` (`measured` | `not_measured`, the latter with a `reason`,
+  never a guessed value), `tip_mm`, `k_n_per_mm`/`k_iqr`, `e_mpa`/`e_iqr`, `shore_a` (Gent equivalent),
+  `uncertainty_pct`, `n_presses`, `per_tip` (every tip's pooled k), `captures` / `skipped_captures`,
+  `capture_fingerprint` (what axio-server's sweep compares to decide a recompute), `job_timestamp` (the newest
+  completed job's integer UID, nullable), `method` + `method_commit`, `source` (`auto` | `backfill`; `manual`
+  reserved for a durometer reading), `measured_at`. The newest row is copied onto `devkits.pad_*`
+  (`pad_stiffness_status`, `pad_stiffness_reason`, `pad_shore_a`, `pad_e_mpa`, `pad_k_n_per_mm`,
+  `pad_stiffness_tip_mm`, `pad_stiffness_uncertainty_pct`, `pad_stiffness_n_presses`,
+  `pad_stiffness_measured_at`; all NULL = never measured) by `record_pad_stiffness()` only, in the same
+  transaction (creates the devkits row if missing; refuses the sentinel; does not commit).
+  `PadStiffnessSummary.from_devkit()` / `DevkitPadStiffnessResponse` are the API shapes. Never record the pad
+  material, brand or grade — measured stiffness only.
+- **Model outputs** (v0.71.0, Dyno #1296, `models/model_outputs.py`, pure) — `required_outputs(type_id)` is the model set a
+  unit needs before testing: plates `force` + `moment`, dev kit (type 18) `force` + `cop` + `field`. `job_outputs(model_type,
+  config)` is what a job produced: its `DEVKIT_RECIPE`'s outputs when the config names one (`set_xf_v1` → all three,
+  `force_xf_v1` → force), else its `model_type`; an unlisted recipe returns None (unknown, never guessed). A set job is
+  stored as `model_type` 'force', which is why `model_type` alone cannot answer this. `DEVKIT_RECIPE_OUTPUTS` mirrors the
+  Neuralizer's `RECIPES`: add a line here when a recipe is added there. `DevkitCalibrationResponse` is one row per
+  output (`output` field; `model_type` stays the job's column).
 - **`Client`** (`clients`) — registered daemon/client hosts (heartbeat tracking via `utils/shared.py`).
 
 Most models also define paired pydantic `*Request`/`*Response` schemas in the same file for the API to reuse.
