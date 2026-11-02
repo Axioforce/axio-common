@@ -80,7 +80,7 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   (`ASSEMBLED_BASELINE_KINDS`) hold per-device baseline snapshots. `assembled_baselines.device_axf_id` is
   deliberately **not** a FK to `force_plates` — load-cell DAQ devices (types `05`/`14`) push `kind='global'`
   baselines without a plate row; the ForcePlate↔AssembledBaseline relationship uses an explicit `foreign()`
-  join and still ORM-cascades on plate delete. FluxLite live tests push `live_test_a` / `live_test_b` (v0.73.0):
+  join and still ORM-cascades on plate delete. FluxLite live tests push `live_test_a` / `live_test_b` (v0.74.0):
   a raw zero-load snapshot at each plate location's first tare after a capture there, matched to its session by device and time.
 - **`Device`** (`devices`, PK `axf_id`) — the trainable unit; `type_id`/`type_name`, best-force/best-moment run
   pointers + metrics (JSON), anomaly counters. One Device → many `Job`s.
