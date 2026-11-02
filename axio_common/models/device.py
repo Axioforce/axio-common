@@ -40,6 +40,19 @@ TYPE_ID_NAME_MAP = {
     "af": "Axiocell",
 }
 
+# The device's model heads and the axis of TE-all MAE that ranks each:
+# z for force, x for moment. Shared by update/recompute/pin.
+MODEL_HEADS = ("force", "moment")
+HEAD_AXIS = {"force": -1, "moment": 0}
+
+
+class BestPinRefused(ValueError):
+    """`Device.pin_best` / `unpin_best` refused the request (HTTP 400)."""
+
+
+class BestPinNotFound(LookupError):
+    """`Device.pin_best` found no such job or run on the device (HTTP 404)."""
+
 
 class DeviceResponse(BaseModel):
     axf_id: str
@@ -67,6 +80,14 @@ class DeviceResponse(BaseModel):
     best_moment_train_metrics: Optional[dict] = None
     best_moment_val_metrics: Optional[dict] = None
     best_moment_test_metrics: Optional[dict] = None
+    # Operator pin on a head (see Device.pin_best). NULL pinned_at = the head
+    # follows the automatic lowest-MAE rule.
+    best_force_pinned_at: Optional[datetime] = None
+    best_force_pinned_by: Optional[str] = None
+    best_force_pin_note: Optional[str] = None
+    best_moment_pinned_at: Optional[datetime] = None
+    best_moment_pinned_by: Optional[str] = None
+    best_moment_pin_note: Optional[str] = None
     anomaly_critical: Optional[int] = 0
     anomaly_warning: Optional[int] = 0
     anomaly_details: Optional[list] = None
@@ -116,6 +137,22 @@ class Device(Base):
     best_moment_val_metrics = Column(JSON, nullable=True)
     best_moment_test_metrics = Column(JSON, nullable=True)
 
+    # Operator pin, one per head (#1305). The best_* pointer above is the
+    # device's SHIPPED model. By default it follows the lowest TE-all MAE, but
+    # a model can be better in ways that MAE at the calibration temperature
+    # does not measure (a thermal-normalized retrain, #1299), so an admin can
+    # pin a head to a chosen run. `pinned_at` NOT NULL means pinned: neither
+    # `update_best_metrics` nor `recompute_best_metrics` moves that head, except
+    # that recompute drops a pin whose job was deleted, so a deleted model is
+    # never shipped. Written only by `pin_best` / `unpin_best` (and cleared by
+    # that recompute).
+    best_force_pinned_at = Column(DateTime(timezone=True), nullable=True)
+    best_force_pinned_by = Column(String, nullable=True)
+    best_force_pin_note = Column(TEXT, nullable=True)
+    best_moment_pinned_at = Column(DateTime(timezone=True), nullable=True)
+    best_moment_pinned_by = Column(String, nullable=True)
+    best_moment_pin_note = Column(TEXT, nullable=True)
+
     # Anomaly detection results (persisted at run completion)
     anomaly_critical = Column(Integer, nullable=True, default=0)
     anomaly_warning = Column(Integer, nullable=True, default=0)
@@ -152,6 +189,15 @@ class Device(Base):
             axis = 0  # Use the x axis
         else:
             logger.warning(f"Unknown model type '{job.model_type}' for device {self.axf_id}")
+            return
+
+        if self.is_pinned(job.model_type):
+            logger.info(
+                f"Device {self.axf_id} best {job.model_type} is pinned to "
+                f"{getattr(self, f'best_{job.model_type}_timestamp')}/"
+                f"{getattr(self, f'best_{job.model_type}_run')} by "
+                f"{getattr(self, f'best_{job.model_type}_pinned_by')}; run "
+                f"{job.timestamp}/{run_number} left it untouched")
             return
 
         best_run = getattr(self, best_run_attr, None)
@@ -191,7 +237,7 @@ class Device(Base):
         else:
             logger.info(f"Run {run_number} did not improve {job.model_type} metrics for device {self.axf_id}")
 
-    def recompute_best_metrics(self, db):
+    def recompute_best_metrics(self, db, model_types=MODEL_HEADS):
         """
         Recompute best_force_* / best_moment_* from scratch over every run that
         belongs to a NON-deleted job for this device.
@@ -204,11 +250,33 @@ class Device(Base):
         using the same metric selection as `update_best_metrics` (TE-all mae,
         z-axis for force / x-axis for moment). If no eligible run remains for a
         head, that head's best_* columns are cleared to NULL.
+
+        A pinned head (`pin_best`) is left untouched while its run survives. If
+        the pinned run's job was deleted (soft or hard) or the run is gone, the
+        pin is dropped and the head is recomputed, so a deleted model is never
+        shipped. `model_types` limits the pass to some heads (`unpin_best`).
         """
         from axio_common.models import Run, Job
 
         activity, metric = "TE-all", "mae"
-        for model_type, axis in (("force", -1), ("moment", 0)):
+        for model_type in model_types:
+            axis = HEAD_AXIS[model_type]
+            if self.is_pinned(model_type):
+                if self._pinned_run(db, model_type) is not None:
+                    logger.info(
+                        f"Device {self.axf_id} best {model_type} is pinned to "
+                        f"{getattr(self, f'best_{model_type}_timestamp')}/"
+                        f"{getattr(self, f'best_{model_type}_run')} by "
+                        f"{getattr(self, f'best_{model_type}_pinned_by')}; "
+                        f"recompute left it untouched.")
+                    continue
+                logger.warning(
+                    f"Device {self.axf_id} best {model_type} was pinned to "
+                    f"{getattr(self, f'best_{model_type}_timestamp')}/"
+                    f"{getattr(self, f'best_{model_type}_run')}, whose job is "
+                    f"deleted or gone; pin dropped, recomputing.")
+                self._clear_pin(model_type)
+
             runs = (
                 db.query(Run)
                 .join(Job, Run.job_id == Job.id)
@@ -234,22 +302,145 @@ class Device(Base):
                     best_value, best_run = value, run
 
             if best_run is None:
-                setattr(self, f"best_{model_type}_run", None)
-                setattr(self, f"best_{model_type}_timestamp", None)
-                setattr(self, f"best_{model_type}_train_metrics", None)
-                setattr(self, f"best_{model_type}_val_metrics", None)
-                setattr(self, f"best_{model_type}_test_metrics", None)
+                self._set_head(model_type, None)
                 logger.info(f"Device {self.axf_id} best {model_type} metrics cleared "
                             f"(no surviving run with {activity} {metric}).")
                 continue
 
-            setattr(self, f"best_{model_type}_run", best_run.number)
-            setattr(self, f"best_{model_type}_timestamp", best_run.job.timestamp)
-            setattr(self, f"best_{model_type}_train_metrics", best_run.train_metrics)
-            setattr(self, f"best_{model_type}_val_metrics", best_run.val_metrics)
-            setattr(self, f"best_{model_type}_test_metrics", best_run.test_metrics)
+            self._set_head(model_type, best_run)
             logger.info(f"Device {self.axf_id} best {model_type} metrics recomputed: "
                         f"{best_run.job.timestamp}/{best_run.number} ({best_value:.4f}).")
+
+    # ---- operator pin ------------------------------------------------------
+
+    def is_pinned(self, model_type) -> bool:
+        """True when an operator has pinned this head (`pin_best`)."""
+        if model_type not in HEAD_AXIS:
+            return False
+        return getattr(self, f"best_{model_type}_pinned_at", None) is not None
+
+    def _set_head(self, model_type, run):
+        """Write the five pointer fields of a head from `run` (None clears).
+
+        The one place both `recompute_best_metrics` and `pin_best` write a
+        head, so a pinned head is set exactly as recompute would set it.
+        """
+        setattr(self, f"best_{model_type}_run", run.number if run else None)
+        setattr(self, f"best_{model_type}_timestamp", run.job.timestamp if run else None)
+        setattr(self, f"best_{model_type}_train_metrics", run.train_metrics if run else None)
+        setattr(self, f"best_{model_type}_val_metrics", run.val_metrics if run else None)
+        setattr(self, f"best_{model_type}_test_metrics", run.test_metrics if run else None)
+
+    def _clear_pin(self, model_type):
+        setattr(self, f"best_{model_type}_pinned_at", None)
+        setattr(self, f"best_{model_type}_pinned_by", None)
+        setattr(self, f"best_{model_type}_pin_note", None)
+
+    def _pinned_run(self, db, model_type):
+        """The run a pinned head points at, or None when its job is deleted or gone."""
+        from axio_common.models import Run, Job
+
+        ts = getattr(self, f"best_{model_type}_timestamp")
+        number = getattr(self, f"best_{model_type}_run")
+        if ts is None or number is None:
+            return None
+        return (
+            db.query(Run)
+            .join(Job, Run.job_id == Job.id)
+            .filter(
+                Job.device_axf_id == self.axf_id,
+                Job.model_type == model_type,
+                Job.timestamp == ts,
+                Job.status != "deleted",
+                Run.number == number,
+            )
+            .first()
+        )
+
+    def pin_best(self, db, model_type, job_timestamp, run_number, actor, note=None):
+        """Pin a head of this device to a hand-picked run (#1305).
+
+        The run becomes the head's shipped model and stays it: completions and
+        recomputes leave a pinned head alone, until `unpin_best` or the job's
+        deletion. Validates first and writes nothing on refusal:
+          - `model_type` is 'force' or 'moment';
+          - the job belongs to THIS device, is of that model_type, has that
+            integer timestamp (the job UID), is status 'completed';
+          - the run exists in that job and has TE-all MAE metrics.
+        Raises `BestPinNotFound` (no such job/run) or `BestPinRefused`
+        (anything else). Re-pinning a pinned head moves the pin. Does NOT
+        commit; the caller owns the transaction.
+        """
+        from axio_common.models import Run, Job
+
+        if model_type not in HEAD_AXIS:
+            raise BestPinRefused(f"model_type must be one of {list(MODEL_HEADS)}, not {model_type!r}")
+        actor = (actor or "").strip()
+        if not actor:
+            raise BestPinRefused("a pin needs an actor (who pinned it)")
+        try:
+            job_timestamp, run_number = int(job_timestamp), int(run_number)
+        except (TypeError, ValueError):
+            raise BestPinRefused("job_timestamp and run_number must be integers")
+
+        jobs = (
+            db.query(Job)
+            .filter(Job.device_axf_id == self.axf_id, Job.timestamp == job_timestamp)
+            .all()
+        )
+        if not jobs:
+            raise BestPinNotFound(f"device {self.axf_id} has no job {job_timestamp}")
+        typed = [j for j in jobs if j.model_type == model_type]
+        if not typed:
+            kinds = "/".join(sorted({str(j.model_type) for j in jobs}))
+            raise BestPinRefused(
+                f"job {job_timestamp} of {self.axf_id} is a {kinds} job, not {model_type}")
+        live = [j for j in typed if j.status != "deleted"]
+        if not live:
+            raise BestPinRefused(f"job {job_timestamp} of {self.axf_id} is deleted")
+        done = [j for j in live if j.status == "completed"]
+        if not done:
+            raise BestPinRefused(
+                f"job {job_timestamp} of {self.axf_id} is {live[0].status}, not completed")
+
+        run = (
+            db.query(Run)
+            .filter(Run.job_id.in_([j.id for j in done]), Run.number == run_number)
+            .first()
+        )
+        if run is None:
+            raise BestPinNotFound(f"job {job_timestamp} of {self.axf_id} has no run {run_number}")
+        block = (run.test_metrics or {}).get("TE-all") or {}
+        try:
+            value = float(block["mae"][HEAD_AXIS[model_type]])
+        except (KeyError, IndexError, TypeError, ValueError):
+            raise BestPinRefused(
+                f"run {job_timestamp}/{run_number} has no TE-all MAE metrics")
+
+        previous = (getattr(self, f"best_{model_type}_timestamp"),
+                    getattr(self, f"best_{model_type}_run"))
+        self._set_head(model_type, run)
+        setattr(self, f"best_{model_type}_pinned_at", current_time())
+        setattr(self, f"best_{model_type}_pinned_by", actor)
+        setattr(self, f"best_{model_type}_pin_note", (note or "").strip() or None)
+        logger.info(
+            f"Device {self.axf_id} best {model_type} PINNED to {job_timestamp}/{run_number} "
+            f"(TE-all mae {value:.4f}) by {actor}; was {previous[0]}/{previous[1]}")
+        return run
+
+    def unpin_best(self, db, model_type):
+        """Drop the pin on a head and recompute it by the automatic rule.
+
+        Idempotent: unpinning an unpinned head still recomputes it. Does NOT
+        commit.
+        """
+        if model_type not in HEAD_AXIS:
+            raise BestPinRefused(f"model_type must be one of {list(MODEL_HEADS)}, not {model_type!r}")
+        was = getattr(self, f"best_{model_type}_pinned_by")
+        self._clear_pin(model_type)
+        logger.info(f"Device {self.axf_id} best {model_type} unpinned "
+                    f"(was pinned by {was}); recomputing")
+        self.recompute_best_metrics(db, model_types=(model_type,))
 
     def to_dict(self):
         """
@@ -276,6 +467,12 @@ class Device(Base):
             "best_moment_train_metrics": self.best_moment_train_metrics,
             "best_moment_val_metrics": self.best_moment_val_metrics,
             "best_moment_test_metrics": self.best_moment_test_metrics,
+            "best_force_pinned_at": self.best_force_pinned_at,
+            "best_force_pinned_by": self.best_force_pinned_by,
+            "best_force_pin_note": self.best_force_pin_note,
+            "best_moment_pinned_at": self.best_moment_pinned_at,
+            "best_moment_pinned_by": self.best_moment_pinned_by,
+            "best_moment_pin_note": self.best_moment_pin_note,
             "anomaly_critical": self.anomaly_critical,
             "anomaly_warning": self.anomaly_warning,
             "anomaly_details": self.anomaly_details,
@@ -315,15 +512,26 @@ class Device(Base):
                 "timestamp": self.best_force_timestamp,
                 "train_metrics": self.best_force_train_metrics,
                 "val_metrics": self.best_force_val_metrics,
-                "test_metrics": self.best_force_test_metrics
+                "test_metrics": self.best_force_test_metrics,
+                **self._pin_dict("force"),
             },
             "moment": {
                 "run": self.best_moment_run,
                 "timestamp": self.best_moment_timestamp,
                 "train_metrics": self.best_moment_train_metrics,
                 "val_metrics": self.best_moment_val_metrics,
-                "test_metrics": self.best_moment_test_metrics
+                "test_metrics": self.best_moment_test_metrics,
+                **self._pin_dict("moment"),
             }
+        }
+
+    def _pin_dict(self, model_type):
+        """The pin of a head, for `best_metrics()` (pinned False = automatic)."""
+        return {
+            "pinned": self.is_pinned(model_type),
+            "pinned_at": getattr(self, f"best_{model_type}_pinned_at"),
+            "pinned_by": getattr(self, f"best_{model_type}_pinned_by"),
+            "pin_note": getattr(self, f"best_{model_type}_pin_note"),
         }
 
     def update_from_server(self, device):

@@ -1,5 +1,5 @@
 from .client import Client
-from .device import Device
+from .device import Device, BestPinRefused, BestPinNotFound, MODEL_HEADS
 from .job import Job
 from .run import Run
 from .force_plate import (
@@ -86,6 +86,7 @@ from .calibration_work_session import (
 
 __all__ = [
     "Client", "Device", "Job", "Run",
+    "BestPinRefused", "BestPinNotFound", "MODEL_HEADS",
     "ForcePlate", "ForcePlateAssignmentHistory", "ForcePlateAssembledDateHistory",
     "AssembledBaseline", "AssembledBaselineSensor",
     "Baseline", "BaselineSensor",
