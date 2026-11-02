@@ -49,7 +49,7 @@ ASSEMBLED_BASELINE_KINDS = (
     # USE_BASELINE_DELTA).
     'global',
     # FluxLite live test: raw-stream zero-load snapshot (same frame as
-    # 'assembled') taken at the first tare at each plate location (A / B).
+    # 'assembled') taken at each plate location's (A / B) first tare after a capture there.
     # Matched to its live_test_sessions row by device + started_at..ended_at.
     'live_test_a',
     'live_test_b',
