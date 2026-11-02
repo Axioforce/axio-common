@@ -83,6 +83,18 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   join and still ORM-cascades on plate delete.
 - **`Device`** (`devices`, PK `axf_id`) — the trainable unit; `type_id`/`type_name`, best-force/best-moment run
   pointers + metrics (JSON), anomaly counters. One Device → many `Job`s.
+  - **The best pointer is the device's shipped model, and it is not purely MAE-driven** (v0.73.0, Dyno #1305).
+    By default `update_best_metrics` (run completion, monotonic) and `recompute_best_metrics` (fleet repair, job
+    deletion) pick the lowest TE-all MAE (z for force, x for moment). An admin can **pin** a head instead:
+    `Device.pin_best(db, model_type, job_timestamp, run_number, actor, note=None)` validates (job on this device, of
+    that model_type, `completed`, not deleted; run has TE-all MAE; `BestPinNotFound` / `BestPinRefused` otherwise,
+    nothing written) and sets the five pointer fields through `_set_head`, the same writer recompute uses, plus
+    `best_{force,moment}_pinned_at` (NOT NULL = pinned) / `_pinned_by` / `_pin_note`. Both automatic writers leave a
+    pinned head untouched and log it. **Exception:** recompute drops a pin whose job is deleted (soft or hard) and
+    recomputes, so a deleted model is never shipped. `unpin_best(db, model_type)` clears the pin and recomputes that
+    head only. The pin is in `best_metrics()` (`pinned`, `pinned_at`, `pinned_by`, `pin_note` per head) and
+    `DeviceResponse`. Nothing pins automatically. Why: a thermal-normalized retrain (#1299) equals the old model at
+    the calibration temperature and beats it away from it, so it never wins on MAE.
 - **`Job`** (`jobs`, PK uuid) → **`Run`** (`runs`) — the NN training job queue. Job carries `status`
   (`queued`→assigned→…), `priority`, `failure_count`, `allowed_hostnames` (targeted-daemon array), heartbeat and
   lifecycle timestamps. Assignment order is `priority DESC, queued_at ASC` (composite indexes defined on the model).
