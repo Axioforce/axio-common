@@ -148,6 +148,17 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   transaction (creates the devkits row if missing; refuses the sentinel; does not commit).
   `PadStiffnessSummary.from_devkit()` / `DevkitPadStiffnessResponse` are the API shapes. Never record the pad
   material, brand or grade — measured stiffness only.
+- **Model publishes** (v0.75.0, Dyno #1277, `models/devkit_model_publish.py`) — `DevkitModelPublish`
+  (`devkit_model_publishes`) is one row per attempt by axio-server to publish a flex's signed model image to a
+  cloud model store (Axiobase `devkitModelPublish`), keyed by `device_axf_id` (`18.<flex_fp>`; no FK) and
+  `store_base` (dev and prod are separate histories): the model (`job_id`, `job_timestamp`, `model_run`),
+  `source` (`auto` | `manual`), `attempt`, `status` (`started` | `published` | `refused` | `upload_failed` |
+  `error`) with `reason`, the image (`version`, `image_sha256`, `image_bytes`, `pack_format`, `input_unit`,
+  `model_artifact`, `pad_stiffness` block or NULL), the store's answer (`store_model_id`, `published_by`),
+  `http_attempts`, the build `log` tail, `started_at` / `finished_at` / `next_attempt_at`. axio-server's sweep
+  reads it to decide idempotency (newest `published` row matches the best force job/run and pad block), the
+  version floor (the store never goes backwards) and its backoff (the `started` row is committed before the
+  build). `DevkitModelPublishResponse` is the API shape.
 - **Model outputs** (v0.71.0, Dyno #1296, `models/model_outputs.py`, pure) — `required_outputs(type_id)` is the model set a
   unit needs before testing: plates `force` + `moment`, dev kit (type 18) `force` + `cop` + `field`. `job_outputs(model_type,
   config)` is what a job produced: its `DEVKIT_RECIPE`'s outputs when the config names one (`set_xf_v1` → all three,
