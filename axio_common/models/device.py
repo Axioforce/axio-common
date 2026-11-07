@@ -7,6 +7,7 @@ from sqlalchemy.orm import relationship
 from axio_common.database import Base
 from axio_common.logger import logger
 from axio_common.utils.model_utils import current_time
+from axio_common.models.loadcell import LOADCELL_TYPE_NAMES
 
 TYPE_ID_NAME_MAP = {
     "01": "(Deprecated) Small Force Plate",
@@ -39,6 +40,9 @@ TYPE_ID_NAME_MAP = {
     "18": "Dev Kit",
     "af": "Axiocell",
 }
+# Six-axis load cell (axioforce-loadcell-firmware, ring0 board): 19, 1a..1f.
+# The names live with the rest of the load cell rules in `loadcell.py`.
+TYPE_ID_NAME_MAP.update(LOADCELL_TYPE_NAMES)
 
 # The device's model heads and the axis of TE-all MAE that ranks each:
 # z for force, x for moment. Shared by update/recompute/pin.

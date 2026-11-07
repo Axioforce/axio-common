@@ -10,6 +10,11 @@ Plate families are the calibration-procedure groupings:
     "lp"     — type ids 07, 11 (Launchpad)
     "xl"     — type ids 08, 12
     "insole" — type ids 09 (Left), 0a (Right)
+    "devkit" — type id 18
+    "loadcell" — type ids 19, 1a..1f (six-axis load cell). Its captures live
+               under `loadcell/<serial>/...`, not `<type>/<device>/...`,
+               because they are taken before the type is known (firmware
+               `docs/SERVER_RECORDS.md`).
 
 The expected set for a session is resolved as:
     1. If the session's tests.txt enumerated TR-/TE- activity codes, use
@@ -120,7 +125,21 @@ TYPE_ID_TO_FAMILY: Dict[str, str] = {
     "09": "insole",   # Shoe Insole Left
     "0a": "insole",   # Shoe Insole Right
     "18": "devkit",   # Axioforce dev kit (STM32N657 base + 5x HAL3304 flex)
+    # Six-axis load cell (ring0 board): 19 custom, 1a-1c center hole and
+    # 1d-1f no hole, low / intermediate / high range. Its bucket prefix is
+    # the top-level `loadcell/` (LOADCELL_PREFIX), keyed by serial.
+    "19": "loadcell",
+    "1a": "loadcell",
+    "1b": "loadcell",
+    "1c": "loadcell",
+    "1d": "loadcell",
+    "1e": "loadcell",
+    "1f": "loadcell",
 }
+
+#: The load cell's top-level bucket family prefix:
+#: `loadcell/<serial>/<iso-date>/{train,test}/<capture>.csv.gz`.
+LOADCELL_PREFIX = "loadcell/"
 
 
 def family_for_type_id(type_id: str) -> Optional[str]:
@@ -214,6 +233,11 @@ DEFAULT_BY_TYPE_AND_SESSION: Dict[str, Dict[int, List[str]]] = {
     # codes here (and in ACTIVITIES), or better, let the session drive its own
     # list from its tests.txt via parse_expected_activities_from_tests_txt().
     "devkit": {
+        1: [],
+    },
+    # Load cell (types 19, 1a..1f): no procedure defined yet, empty for the
+    # same reason as the dev kit's (W5 defines the calibration captures).
+    "loadcell": {
         1: [],
     },
 }
@@ -318,14 +342,32 @@ _ACTIVITY_FROM_FILENAME = re.compile(
 )
 
 
+# Load cell capture key: loadcell/<serial>/<iso-date>/<train|test>/<capture>.csv[.gz]
+# The split comes from the folder, the activity code from the capture's name.
+_LOADCELL_CAPTURE_KEY = re.compile(
+    r"^loadcell/(?P<serial>[0-9a-f]{8})/(?P<date>[^/]+)/"
+    r"(?P<split>train|test)/(?P<capture>[A-Za-z0-9][A-Za-z0-9_-]*)"
+    r"\.csv(?:\.gz)?$"
+)
+
+
 def parse_activity_from_key(key: str) -> str | None:
     """Extract the activity_id (e.g. 'TR-BER') from a bucket key or filename.
-    Returns None if no recognizable activity marker is found."""
+    Returns None if no recognizable activity marker is found.
+
+    A load cell capture key (`loadcell/<serial>/<iso-date>/train/<capture>.csv.gz`)
+    has no `-TR-<code>_` marker in a fixed form: the folder says train or test
+    and the capture's file name (uppercased, no extension) is the code, unless
+    the name itself carries the fleet's marker, which then wins."""
     name = key.rsplit("/", 1)[-1]
     m = _ACTIVITY_FROM_FILENAME.search(name)
-    if not m:
-        return None
-    return f"{m.group('kind')}-{m.group('code')}"
+    if m:
+        return f"{m.group('kind')}-{m.group('code')}"
+    m = _LOADCELL_CAPTURE_KEY.match(key)
+    if m:
+        kind = "TR" if m.group("split") == "train" else "TE"
+        return f"{kind}-{m.group('capture').upper()}"
+    return None
 
 
 __all__ = [
@@ -333,6 +375,7 @@ __all__ = [
     "DEFAULT_EXPECTED",
     "DEFAULT_BY_TYPE_AND_SESSION",
     "TYPE_ID_TO_FAMILY",
+    "LOADCELL_PREFIX",
     "activity_description",
     "parse_activity_from_key",
     "parse_expected_activities_from_tests_txt",

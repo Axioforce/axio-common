@@ -4,6 +4,7 @@ from .activities import (  # noqa: F401
     DEFAULT_EXPECTED,
     DEFAULT_BY_TYPE_AND_SESSION,
     TYPE_ID_TO_FAMILY,
+    LOADCELL_PREFIX,
     activity_description,
     parse_activity_from_key,
     family_for_type_id,

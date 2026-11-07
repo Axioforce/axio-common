@@ -166,6 +166,25 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   stored as `model_type` 'force', which is why `model_type` alone cannot answer this. `DEVKIT_RECIPE_OUTPUTS` mirrors the
   Neuralizer's `RECIPES`: add a line here when a recipe is added there. `DevkitCalibrationResponse` is one row per
   output (`output` field; `model_type` stays the job's column).
+- **`LoadCellUnit`** (`loadcell_units`, PK `serial`, v0.76.0, Dyno #1380, `models/loadcell.py`) — the six-axis
+  load cell's unit record (firmware repo `axioforce-loadcell-firmware/docs/SERVER_RECORDS.md`, contract 6). The key
+  is the **serial**: CRC-32 (IEEE, zlib's) over the 12 STM32 UID bytes in IDENTIFY order (word 0 first, little-endian),
+  8 lowercase hex. `mcu_uid` (UNIQUE) is those 12 bytes as 24 **lowercase** hex in that order, NOT the dev kit's
+  uppercase `flexid` order: never mix the two `format_mcu_uid`s (the package exports this one as
+  `format_loadcell_mcu_uid`, with `format_loadcell_serial`, `loadcell_serial_from_uid`, `loadcell_device_id_for`;
+  the module keeps the contract's bare names). The **type is NULL until calibration** (`19`, `1a`..`1f`,
+  `LOADCELL_TYPE_IDS`; IDENTIFY's `0` is the uncalibrated sentinel, and `device_id_for()` returns None for it) and
+  `device_axf_id` (UNIQUE, not an FK) is `<type>.<serial>` from then on; nothing keyed by the serial is renamed.
+  `LoadCellUnit.register()` holds the registration rules in order (malformed or all-zero UID -> ValueError; serial
+  != `serial_from_uid(uid)` -> `LoadCellSerialMismatch`; serial held by another UID, the CRC collision, or UID held
+  under another serial -> `LoadCellIdentityConflict`; else upsert, None erases nothing, never the type).
+  `set_type()` is the only writer of the type: once, then `LoadCellTypeAlreadySet` unless `force=True` with a
+  reason; every change appends `LoadCellUnitTypeHistory` (`loadcell_unit_type_history`). `update_fields()` (PATCH)
+  refuses the serial, UID, type, device id and model. `pad_lot` is a lot, never the pad material, brand or grade.
+  `LOADCELL_TYPE_NAMES` (also merged into `device.TYPE_ID_NAME_MAP`) are descriptive placeholders until the
+  product names are decided. In `storage/activities.py` the types map to the `loadcell` family, whose captures live
+  under the top-level `loadcell/<serial>/<iso-date>/{train,test}/<capture>.csv.gz` (`LOADCELL_PREFIX`), and
+  `parse_activity_from_key` reads such a key as `TR-`/`TE-` + the capture name uppercased.
 - **`Client`** (`clients`) — registered daemon/client hosts (heartbeat tracking via `utils/shared.py`).
 
 Most models also define paired pydantic `*Request`/`*Response` schemas in the same file for the API to reuse.
@@ -175,7 +194,7 @@ Most models also define paired pydantic `*Request`/`*Response` schemas in the sa
 Two cooperating pieces define what activities a calibration day should contain:
 
 1. **Static defaults** — `storage/activities.py`: the canonical `ACTIVITIES` catalog (train `TR-*` / test `TE-*`
-   codes + descriptions), `TYPE_ID_TO_FAMILY` (plate families `lite`/`lp`/`xl`/`insole`),
+   codes + descriptions), `TYPE_ID_TO_FAMILY` (plate families `lite`/`lp`/`xl`/`insole`, plus `devkit` and `loadcell`),
    `DEFAULT_BY_TYPE_AND_SESSION`, and helpers (`default_expected_for`, `parse_activity_from_key`,
    `family_for_device_id`). The fallback when nothing is overridden.
 2. **Editable DB registry** — `models/calibration_procedure.py`: a three-level override cascade —

@@ -29,6 +29,21 @@ from .devkit import (
     UNIDENTIFIED_TMP_UID, format_tmp_uid, format_mcu_uid,
     AUTO_EOL_TOOL, AUTO_EOL_CHECKS, is_automatic_eol,
 )
+# Load cell (contract 6). The generic helper names (`format_serial`,
+# `format_mcu_uid`, ...) stay in `axio_common.models.loadcell`; here they carry
+# a `loadcell` prefix, because the dev kit's `format_mcu_uid` (uppercase,
+# flexid order) is already exported under the bare name.
+from .loadcell import (
+    LoadCellUnit, LoadCellUnitTypeHistory,
+    LoadCellRegisterRequest, LoadCellUnitUpdateRequest, LoadCellSetTypeRequest,
+    LoadCellUnitResponse, LoadCellUnitTypeHistoryResponse,
+    LoadCellSerialMismatch, LoadCellIdentityConflict, LoadCellTypeAlreadySet,
+    LOADCELL_TYPE_IDS, LOADCELL_TYPE_NAMES, is_loadcell_type,
+    format_serial as format_loadcell_serial,
+    format_mcu_uid as format_loadcell_mcu_uid,
+    serial_from_uid as loadcell_serial_from_uid,
+    device_id_for as loadcell_device_id_for,
+)
 from .devkit_pad_stiffness import (
     DevkitPadStiffness, DevkitPadStiffnessResponse, PadStiffnessSummary,
     PAD_STIFFNESS_STATUSES, PAD_STIFFNESS_MEASURED, PAD_STIFFNESS_NOT_MEASURED,
@@ -125,6 +140,15 @@ __all__ = [
     "flex_fp_from_device_id", "is_devkit_id", "model_artifact_name",
     "EolResult",
     "AutoEolAttempt",
+    "LoadCellUnit", "LoadCellUnitTypeHistory",
+    "LoadCellRegisterRequest", "LoadCellUnitUpdateRequest",
+    "LoadCellSetTypeRequest", "LoadCellUnitResponse",
+    "LoadCellUnitTypeHistoryResponse",
+    "LoadCellSerialMismatch", "LoadCellIdentityConflict",
+    "LoadCellTypeAlreadySet",
+    "LOADCELL_TYPE_IDS", "LOADCELL_TYPE_NAMES", "is_loadcell_type",
+    "format_loadcell_serial", "format_loadcell_mcu_uid",
+    "loadcell_serial_from_uid", "loadcell_device_id_for",
     "DevkitPadStiffness", "DevkitPadStiffnessResponse", "PadStiffnessSummary",
     "PAD_STIFFNESS_STATUSES", "PAD_STIFFNESS_MEASURED",
     "PAD_STIFFNESS_NOT_MEASURED", "PAD_STIFFNESS_SOURCES",
