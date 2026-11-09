@@ -58,6 +58,11 @@ from .devkit_model_publish import (
     MODEL_PUBLISH_SOURCES, MODEL_PUBLISH_SOURCE_AUTO,
     MODEL_PUBLISH_SOURCE_MANUAL,
 )
+from .devkit_pack_build import (
+    DevkitPackBuild, DevkitPackBuildResponse,
+    PACK_BUILD_STATUSES, PACK_BUILD_STARTED, PACK_BUILD_BUILT,
+    PACK_BUILD_REFUSED, PACK_BUILD_ERROR,
+)
 from .devkit_shipping import (
     DevkitBase, DevkitBaseEvent, DevkitShipment, DevkitShipmentFlex,
     DevkitShipmentBase, DevkitShipmentConflict, DevkitShipmentMissing,
@@ -172,6 +177,9 @@ __all__ = [
     "MODEL_PUBLISH_UPLOAD_FAILED", "MODEL_PUBLISH_ERROR",
     "MODEL_PUBLISH_SOURCES", "MODEL_PUBLISH_SOURCE_AUTO",
     "MODEL_PUBLISH_SOURCE_MANUAL",
+    "DevkitPackBuild", "DevkitPackBuildResponse",
+    "PACK_BUILD_STATUSES", "PACK_BUILD_STARTED", "PACK_BUILD_BUILT",
+    "PACK_BUILD_REFUSED", "PACK_BUILD_ERROR",
     "DevkitBase", "DevkitBaseEvent", "DevkitShipment", "DevkitShipmentFlex",
     "DevkitShipmentBase", "DevkitShipmentConflict", "DevkitShipmentMissing",
     "DevkitStoreRecord", "DevkitBaseReportRequest", "DevkitBaseEventResponse",

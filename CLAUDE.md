@@ -159,6 +159,15 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   reads it to decide idempotency (newest `published` row matches the best force job/run and pad block), the
   version floor (the store never goes backwards) and its backoff (the `started` row is committed before the
   build). `DevkitModelPublishResponse` is the API shape.
+- **Pack builds** (v0.78.0, Dyno #1416, `models/devkit_pack_build.py`) — `DevkitPackBuild`
+  (`devkit_pack_builds`) is one row per model pack axio-server built for an operator to add to an OPEN base's model
+  store (the internal DAQ's "run any server model on the attached flex"). Nothing is published; the plaintext pack
+  goes back in the response. Columns: `requested_by` (`<role> (<name>)`), the model (`source_device_axf_id`,
+  `job_id`, `job_timestamp`, `model_run`, `recipe`), the flex it is bound to (`target_device_axf_id`, no FK),
+  `is_foreign` (target != source: a model on another pad, plausible but wrong forces), `status` (`started` | `built` |
+  `refused` | `error`) with `reason`, the returned pack (`pack_sha256`, `pack_bytes`, `pack_format`, `input_unit`,
+  `entry_names`, `pad_stiffness` block or NULL), the build `log` tail, `started_at` / `finished_at`. The `started`
+  row is committed before the build. `DevkitPackBuildResponse` is the API shape.
 - **Model outputs** (v0.71.0, Dyno #1296, `models/model_outputs.py`, pure) — `required_outputs(type_id)` is the model set a
   unit needs before testing: plates `force` + `moment`, dev kit (type 18) `force` + `cop` + `field`. `job_outputs(model_type,
   config)` is what a job produced: its `DEVKIT_RECIPE`'s outputs when the config names one (`set_xf_v1` → all three,
