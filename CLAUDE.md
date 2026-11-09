@@ -62,7 +62,7 @@ reinstalls the new version into the `axio-server` and `axio-dash` conda envs.
   (UTC-aware default for timestamp columns), `db_middleware.py`, `database.py`.
 - `logger/` — `logger` plus a `HostnameFilter` that stamps hostname/IP onto every record.
 - `insole_sensor_mask.py` / `INSOLE_SENSOR_MASK.md` — insole sensor-mask reference data.
-- `tests/` — unit tests (procedure registry, devkit identity/ownership on in-memory SQLite). Run `pytest axio_common/tests`
+- `tests/` — unit tests (procedure registry, devkit identity/ownership, devkit bases/shipments on in-memory SQLite). Run `pytest axio_common/tests`
   with `DATABASE_URL=sqlite://` — bare `pytest` at the root also collects `models/` and errors on the pool kwargs.
 
 ### ORM model graph
@@ -185,6 +185,34 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   product names are decided. In `storage/activities.py` the types map to the `loadcell` family, whose captures live
   under the top-level `loadcell/<serial>/<iso-date>/{train,test}/<capture>.csv.gz` (`LOADCELL_PREFIX`), and
   `parse_activity_from_key` reads such a key as `TR-`/`TE-` + the capture name uppercased.
+- **Dev-kit bases and shipments** (v0.77.0, Dyno #1401 / #1403, `models/devkit_shipping.py`). **`DevkitBase`**
+  (`devkit_bases`, PK `mcu_uid`: 24 uppercase hex via `devkit.format_mcu_uid`, all zeros refused, never the load
+  cell's lowercase helper) is the base board's own record, which it lacked while identity follows the flex: `state`
+  (`DEVKIT_BASE_STATES` = `open | provisioned | locked | retired`; provisioned = BOOT1 fused, locked = production keys
+  fused / lifecycle closed), `provisioned_at`/`_by`, `locked_at`/`_by`, `security_state` (int, as IDENTIFY reports),
+  `firmware_version`, `firmware_flavor`, `boot_image_version` / `app_image_version` / `models_image_version` (the
+  lockdown's init images), `store_records` (JSON list of `{flex_fp, version, seq}` last read from the sealed model
+  store; NULL = never read, `[]` = read, empty) + `store_read_at`, `notes`. `DevkitBase.report()` is the only writer:
+  an upsert (None keeps the stored value) that moves the state only forward (fusing is one-way; any state may go to
+  `retired`, which is final) and appends one **`DevkitBaseEvent`** (`devkit_base_events`, append-only: `kind` in
+  `DEVKIT_BASE_EVENT_KINDS` = `created | provisioned | locked | state_changed | updated | store_read | note`, `at`,
+  `by`, `reason`, JSON `detail` with old/new values) per kind of change; every store read is an event, even an
+  unchanged one. **`DevkitShipment`** (`devkit_shipments`) is one box to one recipient: `status`
+  (`ready_to_ship | shipped | cancelled`), recipient (`recipient_name`, lowercased `recipient_email`, `_phone`,
+  `_org`, `address_line1/2`, `city`, `region`, `postal_code`, ISO-2 uppercase `country_code`), `kind` (one of
+  `DEVKIT_OWNER_KINDS`) / `ref` / `return_by` (the owner rules: required for a loan, allowed for an evaluation),
+  `notes`, `created_*`, `carrier` / `tracking_number` / `shipped_at` / `shipped_by`, `cancelled_at` / `_by` /
+  `cancel_reason`, with link tables `devkit_shipment_flexes` (→ `devkits`) and `devkit_shipment_bases`
+  (→ `devkit_bases`). Writers: `DevkitShipment.create()` (ValueError for bad recipient / terms / ids,
+  `DevkitShipmentMissing` for an unknown flex or base, `DevkitShipmentConflict` with `.conflicts` for an unlocked
+  base or a flex on another `ready_to_ship` shipment or a base on another `ready_to_ship` / `shipped` one; locks the
+  rows FOR UPDATE), `.mark_shipped()` and `.cancel()` (both only from `ready_to_ship`). **The ship date is
+  `owner_since`** (decided for #1403): `mark_shipped` calls `Devkit.set_owner` with the same holder and terms and
+  `owner_since = shipped_at` for every flex whose `owner_email` is the recipient's, so no owner-history row; other
+  flexes are left alone and returned in `owner_not_recipient`. A base on a shipped shipment never returns to the
+  pile (`BASE_HELD_STATUSES`); a shipped flex can ship again (`FLEX_HELD_STATUSES` is `ready_to_ship` only).
+  `shipment_response(s)` builds `DevkitShipmentResponse` with each flex's current owner and each base's store,
+  cross-referenced (`bases_holding_model`, `flexes_in_store`). No writer commits.
 - **`Client`** (`clients`) — registered daemon/client hosts (heartbeat tracking via `utils/shared.py`).
 
 Most models also define paired pydantic `*Request`/`*Response` schemas in the same file for the API to reuse.
