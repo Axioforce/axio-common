@@ -35,7 +35,7 @@ required grid keys a recipe ignores), as a dev kit `DEVKIT_RECIPE` job has.
 """
 import re
 from datetime import datetime
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Union
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import (
@@ -306,7 +306,7 @@ class LoadCellTrainingJobRequest(BaseModel):
     #: Date segments of the sessions to train on (ISO dates; never `test-`).
     sessions: List[str]
     #: `1a`..`1f`; `19` only with `custom`. Never 0.
-    device_type_id: str
+    device_type_id: Union[str, int]
     recipe: str
     custom: bool = False
     #: Capture keys of those sessions to leave out.
