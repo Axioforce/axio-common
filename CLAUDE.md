@@ -168,6 +168,20 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   `refused` | `error`) with `reason`, the returned pack (`pack_sha256`, `pack_bytes`, `pack_format`, `input_unit`,
   `entry_names`, `pad_stiffness` block or NULL), the build `log` tail, `started_at` / `finished_at`. The `started`
   row is committed before the build. `DevkitPackBuildResponse` is the API shape.
+- **Model releases** (v0.80.0, Dyno #1421, `models/devkit_release.py`) — `DevkitRelease` (`devkit_releases`) is the
+  ledger of every dev-kit flex model axio-server decided to release from the dev store to production: one row per
+  (`device_axf_id`, `version`) (unique), with `flex_fp`, the dev store's `dev_row_id` (`18.<fp>/<version>`) and
+  `dev_image_sha256`, the source job (`job_id`, `job_timestamp`, `model_run`, `recipe`; NULL = not known), the
+  `verdict` (`active` | `draft`), `reasons` (JSON list of short strings), `evidence` (JSON: EOL row ids, current
+  recipe, the production entry it replaces), `evaluated_at`, and the AxioSeal job's progress: `state` (`pending` →
+  `copied` → `done`, or `failed`; `sealed` reserved), `production_row_id`, `entry_sha256`, `sealed_status`,
+  `last_step` / `last_detail` / `last_error`, `attempts`, `created_at` / `updated_at`. The gates live in axio-server
+  (`app/services/devkit_release.py`); this module holds the step-report rules: `apply_report(step, outcome, ...)`
+  (`copy_open` done/already → `copied`; `seal_entry` done/already → `done` with `sealed_status`, from any open state;
+  `failed` counts `attempts` and records `last_error`, `MAX_RELEASE_ATTEMPTS` (5) → `failed`; a success repeated on
+  a `done` row is a no-op; `ReleaseReportRefused` for any report on a `failed` row or a failure on a `done` one;
+  `ValueError` for an unknown step / outcome / status). Does not commit. `RELEASE_OPEN_STATES` is what the AxioSeal
+  job is still owed. `DevkitReleaseResponse` is the API shape.
 - **Model outputs** (v0.71.0, Dyno #1296, `models/model_outputs.py`, pure) — `required_outputs(type_id)` is the model set a
   unit needs before testing: plates `force` + `moment`, dev kit (type 18) `force` + `cop` + `field`. `job_outputs(model_type,
   config)` is what a job produced: its `DEVKIT_RECIPE`'s outputs when the config names one (`set_xf_v1` → all three,
