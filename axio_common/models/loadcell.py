@@ -46,11 +46,11 @@ any training job does.
 import re
 import zlib
 from datetime import datetime
-from typing import List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import (
-    Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text,
+    BigInteger, Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Session, relationship
@@ -489,6 +489,84 @@ class LoadCellUnit(Base):
         return True
 
 
+    def record_calibration(self, db: Session, type_id, *, model_version,
+                           model_crc32, calibration_date: datetime,
+                           operator: str, recorded_by: str, job_id=None,
+                           job_timestamp=None, run_number=None,
+                           model_key=None, pack_key=None, heldout=None,
+                           source=None, notes=None) -> "LoadCellCalibration":
+        """Record a model pack installed on this unit at calibration (#1408).
+
+        Sets the type through `set_type()` **never forced**: the first
+        calibration types the unit; a later one of the same type is a
+        re-install; a different type is `LoadCellTypeAlreadySet` (pads cannot
+        be swapped; a pad rework goes through the forced `PUT .../type` with a
+        reason first). Then writes `model_version`, `model_crc32`,
+        `calibration_date` and `operator` onto the unit and appends a
+        `LoadCellCalibration` row with the model artifact keys and the
+        held-out figures.
+
+        Everything is validated before anything is written (ValueError): the
+        pack's version (YYYYMMDD) and CRC (8 hex) are both required, so are
+        the date, the operator and `recorded_by`; `job_timestamp` is the job's
+        integer UID (YYYYMMDDHHMMSS, kept as the integer), `run_number` >= 1,
+        `model_key` / `pack_key` must lie under `loadcell/<serial>/models/`,
+        `heldout` is a JSON object. Does NOT commit.
+        """
+        from axio_common.storage.loadcell import loadcell_models_prefix
+        format_type_id(type_id)
+        version = format_model_version(model_version)
+        crc = format_model_crc32(model_crc32)
+        if version is None or crc is None:
+            raise ValueError("an installed pack has both a model_version "
+                             "(YYYYMMDD) and a model_crc32")
+        if not isinstance(calibration_date, datetime):
+            raise ValueError("calibration_date (the certificate's date) is "
+                             "required")
+        if not (operator or "").strip():
+            raise ValueError("operator is required")
+        if not (recorded_by or "").strip():
+            raise ValueError("recorded_by is required")
+        if job_timestamp is not None:
+            if isinstance(job_timestamp, bool) or \
+                    not isinstance(job_timestamp, int) or \
+                    not 10**13 <= job_timestamp < 10**14:
+                raise ValueError(
+                    f"job_timestamp {job_timestamp!r} is not a job UID "
+                    f"(the integer YYYYMMDDHHMMSS)")
+        if run_number is not None and (isinstance(run_number, bool) or
+                                       not isinstance(run_number, int) or
+                                       run_number < 1):
+            raise ValueError(f"run_number {run_number!r} is not a run (>= 1)")
+        prefix = loadcell_models_prefix(self.serial)
+        for name, key in (("model_key", model_key), ("pack_key", pack_key)):
+            if key is not None and (not isinstance(key, str) or
+                                    not key.startswith(prefix) or
+                                    key.endswith("/")):
+                raise ValueError(f"{name} {key!r} is not a file under "
+                                 f"{prefix}")
+        if heldout is not None and not isinstance(heldout, dict):
+            raise ValueError("heldout is a JSON object of figures")
+
+        self.set_type(db, type_id, changed_by=recorded_by,
+                      reason="calibration: model pack installed",
+                      model_version=version, model_crc32=crc)
+        self.calibration_date = calibration_date
+        self.operator = operator.strip()
+        row = LoadCellCalibration(
+            serial=self.serial, device_type_id=self.device_type_id,
+            device_axf_id=self.device_axf_id, model_version=version,
+            model_crc32=crc, calibration_date=calibration_date,
+            operator=operator.strip(), job_id=job_id,
+            job_timestamp=job_timestamp, run_number=run_number,
+            model_key=model_key, pack_key=pack_key, heldout=heldout,
+            recorded_by=recorded_by.strip(), source=source, notes=notes)
+        db.add(row)
+        logger.info(f"Load cell {self.serial}: calibration recorded "
+                    f"({self.device_axf_id}, pack {version} crc {crc})")
+        return row
+
+
 class LoadCellUnitTypeHistory(Base):
     """Append-only: every type a unit has been given, written by `set_type`.
 
@@ -512,6 +590,51 @@ class LoadCellUnitTypeHistory(Base):
 
 Index("ix_loadcell_unit_type_history_serial_time",
       LoadCellUnitTypeHistory.serial, LoadCellUnitTypeHistory.changed_at)
+
+
+class LoadCellCalibration(Base):
+    """Append-only: every model pack installed on a unit (#1408).
+
+    Written by `LoadCellUnit.record_calibration` only. The newest row is the
+    unit's installed calibration (its `model_version` / `model_crc32` /
+    `calibration_date` / `operator` are copied onto `loadcell_units`); older
+    rows are what the unit carried before. Holds what the unit row does not:
+    the training job (`job_id`, `job_timestamp` = the job's integer UID, never
+    a date, `run_number`), the Tigris keys of the trained model and of the
+    built pack, and the held-out figures (JSON, as the trainer reports them).
+    `job_id` is not a FK: a job may be deleted, the record of what is on a
+    shipped board may not.
+    """
+    __tablename__ = "loadcell_calibrations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    serial = Column(String, ForeignKey("loadcell_units.serial"),
+                    nullable=False, index=True)
+    device_type_id = Column(String, nullable=False)
+    device_axf_id = Column(String, nullable=False)
+    model_version = Column(String, nullable=False)
+    model_crc32 = Column(String, nullable=False)
+    calibration_date = Column(DateTime(timezone=True), nullable=False)
+    operator = Column(String, nullable=False)
+    job_id = Column(String, nullable=True, index=True)
+    #: The job's packed YYYYMMDDHHMMSS integer UID. Never a date.
+    job_timestamp = Column(BigInteger, nullable=True)
+    run_number = Column(Integer, nullable=True)
+    #: `loadcell/<serial>/models/...` key of the trained model (.h5).
+    model_key = Column(String, nullable=True)
+    #: `loadcell/<serial>/models/...` key of the built pack (.pack).
+    pack_key = Column(String, nullable=True)
+    #: Held-out figures, as the trainer reports them.
+    heldout = Column(JSON, nullable=True)
+    recorded_by = Column(String, nullable=False)
+    recorded_at = Column(DateTime(timezone=True), nullable=False,
+                         default=current_time)
+    source = Column(String, nullable=True)
+    notes = Column(Text, nullable=True)
+
+
+Index("ix_loadcell_calibrations_serial_time",
+      LoadCellCalibration.serial, LoadCellCalibration.recorded_at)
 
 
 def _check_mag_ids(mag_ids):
@@ -605,3 +728,47 @@ class LoadCellUnitTypeHistoryResponse(BaseModel):
     changed_by: Optional[str] = None
     reason: Optional[str] = None
     changed_at: datetime
+
+
+class LoadCellCalibrationRequest(BaseModel):
+    """Body of `POST /loadcell/units/{serial}/calibrations`: a model pack was
+    installed. The type is set once; a different one is refused (409)."""
+    model_config = ConfigDict(protected_namespaces=(), extra="forbid")
+
+    device_type_id: Union[str, int]
+    model_version: Union[str, int]
+    model_crc32: Union[str, int]
+    calibration_date: datetime
+    operator: str
+    recorded_by: Optional[str] = None
+    job_id: Optional[str] = None
+    job_timestamp: Optional[int] = None
+    run_number: Optional[int] = None
+    model_key: Optional[str] = None
+    pack_key: Optional[str] = None
+    heldout: Optional[Dict[str, Any]] = None
+    source: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class LoadCellCalibrationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+    id: int
+    serial: str
+    device_type_id: str
+    device_axf_id: str
+    model_version: str
+    model_crc32: str
+    calibration_date: datetime
+    operator: str
+    job_id: Optional[str] = None
+    job_timestamp: Optional[int] = None
+    run_number: Optional[int] = None
+    model_key: Optional[str] = None
+    pack_key: Optional[str] = None
+    heldout: Optional[Dict[str, Any]] = None
+    recorded_by: str
+    recorded_at: datetime
+    source: Optional[str] = None
+    notes: Optional[str] = None

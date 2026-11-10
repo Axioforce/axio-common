@@ -43,6 +43,15 @@ from .loadcell import (
     format_mcu_uid as format_loadcell_mcu_uid,
     serial_from_uid as loadcell_serial_from_uid,
     device_id_for as loadcell_device_id_for,
+    LoadCellCalibration, LoadCellCalibrationRequest,
+    LoadCellCalibrationResponse,
+)
+# Load cell captures and training jobs (#1408).
+from .loadcell_capture import (
+    LoadCellCaptureSession, LoadCellCaptureFile,
+    LoadCellCaptureSessionResponse, LoadCellCaptureFileResponse,
+    LoadCellTrainingJobRequest, LOADCELL_JOB_KEYS, LOADCELL_CUSTOM_TYPE,
+    loadcell_job_config, loadcell_job_fields, loadcell_job_type,
 )
 from .devkit_pad_stiffness import (
     DevkitPadStiffness, DevkitPadStiffnessResponse, PadStiffnessSummary,
@@ -166,6 +175,12 @@ __all__ = [
     "LOADCELL_TYPE_IDS", "LOADCELL_TYPE_NAMES", "is_loadcell_type",
     "format_loadcell_serial", "format_loadcell_mcu_uid",
     "loadcell_serial_from_uid", "loadcell_device_id_for",
+    "LoadCellCalibration", "LoadCellCalibrationRequest",
+    "LoadCellCalibrationResponse",
+    "LoadCellCaptureSession", "LoadCellCaptureFile",
+    "LoadCellCaptureSessionResponse", "LoadCellCaptureFileResponse",
+    "LoadCellTrainingJobRequest", "LOADCELL_JOB_KEYS", "LOADCELL_CUSTOM_TYPE",
+    "loadcell_job_config", "loadcell_job_fields", "loadcell_job_type",
     "DevkitPadStiffness", "DevkitPadStiffnessResponse", "PadStiffnessSummary",
     "PAD_STIFFNESS_STATUSES", "PAD_STIFFNESS_MEASURED",
     "PAD_STIFFNESS_NOT_MEASURED", "PAD_STIFFNESS_SOURCES",
