@@ -1,0 +1,11 @@
+Serial: fe059e4b
+MCU UID: 2a001d001750314751333420
+Board rev: 0
+Firmware: 0.1.0
+Reference: SIMULATED FT81024 (sim), mount base
+Device type: 00 (uncalibrated)
+Session file: dry run small
+Calibrated by: Claude dry run
+TR-GRID: normal grid, 2 point(s) x loads 20 N, 2 presses
+TR-ARMX: normal arm_x, 1 point(s) x loads 15 N, 1 presses
+TR-EDGETZ: edge edge_tz, 2 point(s) x loads 8 N, 2 presses
