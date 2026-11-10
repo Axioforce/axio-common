@@ -188,7 +188,11 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   `force_xf_v1` → force), else its `model_type`; an unlisted recipe returns None (unknown, never guessed). A set job is
   stored as `model_type` 'force', which is why `model_type` alone cannot answer this. `DEVKIT_RECIPE_OUTPUTS` mirrors the
   Neuralizer's `RECIPES`: add a line here when a recipe is added there. `DevkitCalibrationResponse` is one row per
-  output (`output` field; `model_type` stays the job's column).
+  output (`output` field; `model_type` stays the job's column). Load cells (v0.81.0, #1423): types `19`, `1a`..`1f`
+  need `force` + `moment` (the six outputs Fx..Tz) and are listed in `REQUIRED_OUTPUTS_BY_TYPE` so the readers that
+  only read the listed types' job configs read theirs; a `LOADCELL_RECIPE` job produces both
+  (`LOADCELL_RECIPE_OUTPUTS`, mirroring Neuralizer `experiments/loadcell6/loadcell_job.py` `RECIPES`; add a line
+  when a recipe is added there), and `job_recipe` returns the `DEVKIT_RECIPE` or else the `LOADCELL_RECIPE`.
 - **`LoadCellUnit`** (`loadcell_units`, PK `serial`, v0.76.0, Dyno #1380, `models/loadcell.py`) — the six-axis
   load cell's unit record (firmware repo `axioforce-loadcell-firmware/docs/SERVER_RECORDS.md`, contract 6). The key
   is the **serial**: CRC-32 (IEEE, zlib's) over the 12 STM32 UID bytes in IDENTIFY order (word 0 first, little-endian),
@@ -239,6 +243,23 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   `set_type()` **never forced** (a different type is `LoadCellTypeAlreadySet`), copies the pack, date and
   operator onto the unit, and appends a `LoadCellCalibration` (`loadcell_calibrations`, append-only; the newest
   row is what is installed). Does not commit.
+- **Load cell end of line, shippable, certificate** (v0.81.0, Dyno #1423, `models/loadcell_eol.py`). The dev kit's
+  `EolResult`/`shippability()` pattern for the serial-keyed load cell. `LoadCellEolResult`
+  (`loadcell_eol_results`, append-only, FK `serial` -> `loadcell_units`): one run as the SDK's
+  `axio-loadcell-internal eol` writes it (`LoadCellEolRequest` takes that document as is, `schema` on the wire):
+  `job_id` + `job_timestamp` (the integer UID), the board's pack (`model_version`, `model_crc32`), `passed`,
+  `simulated`, `checks` (`LOADCELL_EOL_CHECKS` = identity model selftest stream tare accuracy), `figures` (the
+  SDK `accuracy.figures`: per axis Fx..Tz MAE / max / RMSE / NRMSE and %FS where rated, per activity,
+  repeatability), `thresholds` + `provisional` (the limits are placeholders until real units set them),
+  `blockers`, firmware version, `build_flavor`, operator, station, tool. The server's automatic row
+  (`LOADCELL_AUTO_EOL_TOOL`) carries `accuracy` only and is never a pass. `loadcell_shippability(db, serial)` is
+  **derived on every read**: shippable when (1) calibrated (typed, a `loadcell_calibrations` row; the newest is
+  what the unit carries), (2) an on-board EOL pass (not simulated, not automatic) with **that calibration's pack
+  CRC**, (3) recorded at or after that calibration (`recorded_at`, the server's clock): any later calibration,
+  the same pack re-installed included, revokes it until a new EOL. `reason` is always a sentence.
+  `loadcell_certificate(db, serial)` -> `LoadCellCertificate` (unit, type and name, pack version + CRC,
+  calibration date, job, the EOL shown and its operator/station/firmware/checks/blockers, `provisional`, per-axis
+  `axes`, `by_activity`); the server renders it. Tests: `tests/test_loadcell_eol.py` (SQLite).
 - **Dev-kit bases and shipments** (v0.77.0, Dyno #1401 / #1403, `models/devkit_shipping.py`). **`DevkitBase`**
   (`devkit_bases`, PK `mcu_uid`: 24 uppercase hex via `devkit.format_mcu_uid`, all zeros refused, never the load
   cell's lowercase helper) is the base board's own record, which it lacked while identity follows the flex: `state`
