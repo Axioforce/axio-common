@@ -62,7 +62,7 @@ reinstalls the new version into the `axio-server` and `axio-dash` conda envs.
   (UTC-aware default for timestamp columns), `db_middleware.py`, `database.py`.
 - `logger/` — `logger` plus a `HostnameFilter` that stamps hostname/IP onto every record.
 - `insole_sensor_mask.py` / `INSOLE_SENSOR_MASK.md` — insole sensor-mask reference data.
-- `tests/` — unit tests (procedure registry, devkit identity/ownership, devkit bases/shipments on in-memory SQLite). Run `pytest axio_common/tests`
+- `tests/` — unit tests (procedure registry, devkit identity/ownership, devkit bases/shipments, load cell units/captures/jobs on in-memory SQLite; `tests/data/` holds the first board's real test-upload tests.txt). Run `pytest axio_common/tests`
   with `DATABASE_URL=sqlite://` — bare `pytest` at the root also collects `models/` and errors on the pool kwargs.
 
 ### ORM model graph
@@ -194,6 +194,37 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   product names are decided. In `storage/activities.py` the types map to the `loadcell` family, whose captures live
   under the top-level `loadcell/<serial>/<iso-date>/{train,test}/<capture>.csv.gz` (`LOADCELL_PREFIX`), and
   `parse_activity_from_key` reads such a key as `TR-`/`TE-` + the capture name uppercased.
+- **Load cell captures, training jobs, calibrations** (v0.79.0, Dyno #1408). **Keys**
+  (`storage/loadcell.py`): the writer is AxioTDK's load cell session (#1399):
+  `loadcell/<serial>/<segment>/{train,test}/<serial>-<TR|TE>-<ACT>_<MM.DD.YYYY>.csv.gz`, `tests.txt`, and sidecars
+  under `<segment>/axiosaurus/`; output under `loadcell/<serial>/models/`. `<segment>` is an ISO date, or
+  `test-<iso-date>` for a **test upload** (anything simulated), which is listed and flagged `is_test` and is
+  **never** calibration data. `parse_loadcell_key()` (-> `LoadCellKey`: serial, part `train|test|tests_txt|sidecar|
+  other|model`, segment, iso_date, is_test, activity; None for anything else, folder markers included),
+  `loadcell_cache_relative(key)` (the cache-relative path a job names; round-trips through
+  `bucket_key_for_cache_path`, test segments included), `loadcell_session_for_cache_path(path)` -> `(serial,
+  segment)` and `download_loadcell_session()` (what the daemon needs: `parse_session_path` does not know this
+  family), `list_loadcell_serials/sessions(include_test=False)/session` (either backend), and
+  `parse_loadcell_tests_txt(body)` -> `{header, activities, descriptions}` (header fields `serial`, `mcu_uid`,
+  `board_rev`, `firmware`, `reference`, `device_type`, `session_file`, `calibrated_by`; activities from
+  `parse_expected_activities_from_tests_txt`). **Index** (`models/loadcell_capture.py`): `LoadCellCaptureSession`
+  (`loadcell_capture_sessions`, UNIQUE (serial, date_segment); `is_test`, counts, sizes, tests.txt header,
+  `expected_activities`, `calibrator_name`, `reported_serial`/`reported_mcu_uid`/`reported_type` from the
+  tests.txt) and `LoadCellCaptureFile` (`loadcell_capture_files`, `bucket_key` UNIQUE, `part`, `activity_id`,
+  `is_hidden`), both written by axio-server's bucket sync; keyed by serial, no FK (not CBS: CBS needs a `devices`
+  row and a type the unit does not have yet). **Job**: `loadcell_job_config(serial, type, recipe, train_keys=,
+  test_keys=, custom=False, notes=)` is the one builder; it refuses test uploads, another serial's keys,
+  sidecars/tests.txt, an empty train or test list, type 0, and `19` unless `custom`. The config is the ordinary
+  shape (cache-relative `TRAIN_INPUT_DIR`/`TEST_INPUT_DIR`/`SELECTED_DIRS`, `RESULTS_DIR =
+  loadcell/<serial>/models/<compound dates>`, `DEVICE_ID = <type>-<serial>`, `OUTPUT_TYPE` "force vector", the
+  Neuralizer's required grid keys, which a recipe ignores) plus exactly `LOADCELL_JOB_KEYS` =
+  `LOADCELL_RECIPE` / `LOADCELL_SERIAL` / `LOADCELL_TYPE`; `loadcell_job_fields(config)` reads them back.
+  **Calibration**: `LoadCellUnit.record_calibration(db, type, model_version=, model_crc32=, calibration_date=,
+  operator=, recorded_by=, job_id=, job_timestamp=, run_number=, model_key=, pack_key=, heldout=)` validates
+  everything first (both pack fields, job UID as the integer, keys under `loadcell/<serial>/models/`), then
+  `set_type()` **never forced** (a different type is `LoadCellTypeAlreadySet`), copies the pack, date and
+  operator onto the unit, and appends a `LoadCellCalibration` (`loadcell_calibrations`, append-only; the newest
+  row is what is installed). Does not commit.
 - **Dev-kit bases and shipments** (v0.77.0, Dyno #1401 / #1403, `models/devkit_shipping.py`). **`DevkitBase`**
   (`devkit_bases`, PK `mcu_uid`: 24 uppercase hex via `devkit.format_mcu_uid`, all zeros refused, never the load
   cell's lowercase helper) is the base board's own record, which it lacked while identity follows the flex: `state`
