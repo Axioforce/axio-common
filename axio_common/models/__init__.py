@@ -47,6 +47,13 @@ from .loadcell import (
     LoadCellCalibrationResponse,
 )
 # Load cell captures and training jobs (#1408).
+from .loadcell_eol import (
+    LoadCellEolResult, LoadCellEolRequest, LoadCellEolResponse,
+    LoadCellShippabilityResponse, LoadCellCertificate, LoadCellCertificateAxis,
+    LOADCELL_EOL_SCHEMA, LOADCELL_EOL_CHECKS, LOADCELL_EOL_TOOL,
+    LOADCELL_AUTO_EOL_TOOL, LOADCELL_AUTO_EOL_CHECKS,
+    is_automatic_loadcell_eol, loadcell_shippability, loadcell_certificate,
+)
 from .loadcell_capture import (
     LoadCellCaptureSession, LoadCellCaptureFile,
     LoadCellCaptureSessionResponse, LoadCellCaptureFileResponse,
@@ -97,7 +104,7 @@ from .devkit_shipping import (
 from .model_outputs import (
     OUTPUT_FORCE, OUTPUT_MOMENT, OUTPUT_COP, OUTPUT_FIELD,
     DEFAULT_REQUIRED_OUTPUTS, REQUIRED_OUTPUTS_BY_TYPE, DEVKIT_RECIPE_OUTPUTS,
-    required_outputs, job_recipe, job_outputs,
+    LOADCELL_RECIPE_OUTPUTS, required_outputs, job_recipe, job_outputs,
 )
 from .calibration_session import (
     CalibrationSession, CalibrationSessionCalibrator, CalibrationSessionDate,
@@ -190,6 +197,11 @@ __all__ = [
     "LoadCellCaptureSession", "LoadCellCaptureFile",
     "LoadCellCaptureSessionResponse", "LoadCellCaptureFileResponse",
     "LoadCellTrainingJobRequest", "LOADCELL_JOB_KEYS", "LOADCELL_CUSTOM_TYPE",
+    "LoadCellEolResult", "LoadCellEolRequest", "LoadCellEolResponse",
+    "LoadCellShippabilityResponse", "LoadCellCertificate",
+    "LoadCellCertificateAxis", "LOADCELL_EOL_SCHEMA", "LOADCELL_EOL_CHECKS",
+    "LOADCELL_EOL_TOOL", "LOADCELL_AUTO_EOL_TOOL", "LOADCELL_AUTO_EOL_CHECKS",
+    "is_automatic_loadcell_eol", "loadcell_shippability", "loadcell_certificate",
     "loadcell_job_config", "loadcell_job_fields", "loadcell_job_type",
     "DevkitPadStiffness", "DevkitPadStiffnessResponse", "PadStiffnessSummary",
     "PAD_STIFFNESS_STATUSES", "PAD_STIFFNESS_MEASURED",
@@ -229,7 +241,7 @@ __all__ = [
     "UNIDENTIFIED_TMP_UID", "format_tmp_uid", "format_mcu_uid",
     "OUTPUT_FORCE", "OUTPUT_MOMENT", "OUTPUT_COP", "OUTPUT_FIELD",
     "DEFAULT_REQUIRED_OUTPUTS", "REQUIRED_OUTPUTS_BY_TYPE", "DEVKIT_RECIPE_OUTPUTS",
-    "required_outputs", "job_recipe", "job_outputs",
+    "LOADCELL_RECIPE_OUTPUTS", "required_outputs", "job_recipe", "job_outputs",
     "AUTO_EOL_TOOL", "AUTO_EOL_CHECKS", "is_automatic_eol",
     "CalibrationActivity", "CalibrationFamilyActivity",
     "CalibrationFamilyDay", "CalibrationActivityDayOverride",
