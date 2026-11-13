@@ -265,3 +265,89 @@ def test_refusals_write_nothing(db, fleet):
     _refused(db, d, BestPinNotFound, "force", 20261101120000, 9, "admin")  # no such run
     with pytest.raises(BestPinRefused):
         d.unpin_best(db, "cop")
+
+
+# ---- dev kit: the current recipe ranks first (#1471) -----------------------
+
+KIT = "18.8c665420"
+
+
+def kit_job(db, ts, recipe, status="completed"):
+    import json
+    j = Job(id=f"job-{KIT}-{ts}", device_axf_id=KIT, model_type="force",
+            config=json.dumps({"DEVKIT_RECIPE": recipe} if recipe else {}),
+            status=status, timestamp=ts)
+    db.add(j)
+    db.flush()
+    return j
+
+
+def complete(db, j, number, test_metrics):
+    r = Run(job_id=j.id, number=number)
+    db.add(r)
+    db.flush()
+    r.complete(j, CompleteRunRequest(job_id=j.id, run_number=number, train_metrics={},
+                                     val_metrics={}, test_metrics=test_metrics,
+                                     epochs_completed=10, hostname="h"), db)
+    db.flush()
+    return r
+
+
+@pytest.fixture
+def kit(db, monkeypatch):
+    monkeypatch.delenv("DEVKIT_CURRENT_RECIPE", raising=False)
+    from axio_common.models import Devkit
+    Devkit.__table__.create(db.get_bind(), checkfirst=True)   # a type-18 completion writes its unit row
+    db.add(Device(axf_id=KIT))
+    db.flush()
+    old = kit_job(db, 20261111164527, "set_xf_v1", status="running")
+    complete(db, old, 1, metrics(1.0))
+    assert head(device(db, KIT)) == (20261111164527, 1)
+    return old
+
+
+def test_a_current_recipe_completion_beats_a_lower_mae_old_recipe(db, kit):
+    new = kit_job(db, 20261113120000, "set_xf_v2", status="running")
+    complete(db, new, 1, metrics(1.2))
+    assert head(device(db, KIT)) == (20261113120000, 1)
+
+
+def test_an_old_recipe_completion_never_displaces_the_current_recipe(db, kit):
+    complete(db, kit_job(db, 20261113120000, "set_xf_v2", status="running"), 1, metrics(1.2))
+    complete(db, kit_job(db, 20261113130000, "set_xf_v1", status="running"), 1, metrics(0.5))
+    complete(db, kit_job(db, 20261113140000, None, status="running"), 1, metrics(0.4))
+    assert head(device(db, KIT)) == (20261113120000, 1)
+
+
+def test_among_current_recipe_jobs_the_lowest_mae_wins(db, kit):
+    complete(db, kit_job(db, 20261113120000, "set_xf_v2", status="running"), 1, metrics(1.2))
+    complete(db, kit_job(db, 20261113130000, "set_xf_v2", status="running"), 1, metrics(1.3))
+    assert head(device(db, KIT)) == (20261113120000, 1)
+    complete(db, kit_job(db, 20261113140000, "set_xf_v2", status="running"), 1, metrics(1.1))
+    assert head(device(db, KIT)) == (20261113140000, 1)
+
+
+def test_recompute_ranks_the_current_recipe_first(db, kit, monkeypatch):
+    kit_job(db, 20261113120000, "set_xf_v2")
+    run(db, db.query(Job).filter(Job.timestamp == 20261113120000).one(), 1, metrics(1.2))
+    d = device(db, KIT)
+    d.recompute_best_metrics(db)
+    assert head(d) == (20261113120000, 1)
+    monkeypatch.setenv("DEVKIT_CURRENT_RECIPE", "set_xf_v1")     # the switch is the env
+    d.recompute_best_metrics(db)
+    assert head(d) == (20261111164527, 1)
+
+
+def test_other_devices_keep_plain_lowest_mae(db):
+    import json
+    j = Job(id="j-v1", device_axf_id=DEV, model_type="force",
+            config=json.dumps({"DEVKIT_RECIPE": "set_xf_v2"}), status="running", timestamp=1)
+    db.add(j)
+    db.flush()
+    complete(db, j, 1, metrics(1.0))
+    k = Job(id="j-v2", device_axf_id=DEV, model_type="force", config="{}",
+            status="running", timestamp=2)
+    db.add(k)
+    db.flush()
+    complete(db, k, 1, metrics(0.9))
+    assert head(device(db)) == (2, 1)

@@ -1,8 +1,10 @@
+import json
+import os
 from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel
 from sqlalchemy import Column, Index, String, TEXT, DateTime, Integer, JSON, BigInteger
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import object_session, relationship
 
 from axio_common.database import Base
 from axio_common.logger import logger
@@ -48,6 +50,25 @@ TYPE_ID_NAME_MAP.update(LOADCELL_TYPE_NAMES)
 # z for force, x for moment. Shared by update/recompute/pin.
 MODEL_HEADS = ("force", "moment")
 HEAD_AXIS = {"force": -1, "moment": 0}
+
+#: The recipe a dev-kit (type 18) model must come from to be preferred as the
+#: device's best (#1471). axio-server's release gate requires the same recipe,
+#: and reads it from here: one value, `DEVKIT_CURRENT_RECIPE` overrides.
+DEVKIT_CURRENT_RECIPE_ENV = "DEVKIT_CURRENT_RECIPE"
+DEFAULT_DEVKIT_CURRENT_RECIPE = "set_xf_v2"
+
+
+def current_devkit_recipe() -> str:
+    """The current dev-kit recipe: `DEVKIT_CURRENT_RECIPE`, else the default."""
+    return (os.environ.get(DEVKIT_CURRENT_RECIPE_ENV) or "").strip() or DEFAULT_DEVKIT_CURRENT_RECIPE
+
+
+def job_devkit_recipe(job) -> Optional[str]:
+    """A job's DEVKIT_RECIPE from its config, None when absent or unreadable."""
+    try:
+        return json.loads(job.config or "{}").get("DEVKIT_RECIPE")
+    except (ValueError, TypeError, AttributeError):
+        return None
 
 
 class BestPinRefused(ValueError):
@@ -206,6 +227,8 @@ class Device(Base):
 
         best_run = getattr(self, best_run_attr, None)
         best_metrics = getattr(self, best_metrics_attr, {})
+        new_rank = self.recipe_rank(job)
+        best_rank = self.recipe_rank(self._head_job(job.model_type)) if best_run else 0
 
         if best_metrics is None:
             best_metrics = {}
@@ -221,7 +244,7 @@ class Device(Base):
         new_metric_value = test_metrics[activity][metric][axis]
         best_metric_value = best_metrics[activity][metric][axis] if best_run else float("inf")
 
-        if best_run is None or new_metric_value < best_metric_value:
+        if best_run is None or (new_rank, new_metric_value) < (best_rank, best_metric_value):
             if best_run is not None:
                 logger.info(
                     f"Device {self.axf_id} best {job.model_type} metrics updated: {job.timestamp}/{run_number} "
@@ -292,7 +315,7 @@ class Device(Base):
                 .all()
             )
 
-            best_value, best_run = float("inf"), None
+            best_key, best_value, best_run = None, float("inf"), None
             for run in runs:
                 tm = run.test_metrics or {}
                 block = tm.get(activity) or tm.get("all")
@@ -302,8 +325,9 @@ class Device(Base):
                     value = block[metric][axis]
                 except (KeyError, IndexError, TypeError):
                     continue
-                if value < best_value:
-                    best_value, best_run = value, run
+                key = (self.recipe_rank(run.job), value)
+                if best_key is None or key < best_key:
+                    best_key, best_value, best_run = key, value, run
 
             if best_run is None:
                 self._set_head(model_type, None)
@@ -314,6 +338,33 @@ class Device(Base):
             self._set_head(model_type, best_run)
             logger.info(f"Device {self.axf_id} best {model_type} metrics recomputed: "
                         f"{best_run.job.timestamp}/{best_run.number} ({best_value:.4f}).")
+
+    def recipe_rank(self, job) -> int:
+        """0 ranks first. On a dev kit (type 18), a job not on the current
+        recipe ranks behind every job on it, whatever its MAE: the release
+        gate refuses such a model, so a pointer on it ships nothing, and a
+        retrain onto a new recipe changes the field model without moving the
+        force MAE that otherwise decides (#1471). Every other device: 0, the
+        plain lowest-MAE rule."""
+        if self.type_id != "18":
+            return 0
+        if job is None:
+            return 1
+        return 0 if job_devkit_recipe(job) == current_devkit_recipe() else 1
+
+    def _head_job(self, model_type):
+        """The job a head points at, or None (no session, or the job is gone)."""
+        if self.type_id != "18":
+            return None
+        from axio_common.models import Job
+        db = object_session(self)
+        ts = getattr(self, f"best_{model_type}_timestamp", None)
+        if db is None or ts is None:
+            return None
+        return (db.query(Job)
+                .filter(Job.device_axf_id == self.axf_id, Job.model_type == model_type,
+                        Job.timestamp == ts)
+                .first())
 
     # ---- operator pin ------------------------------------------------------
 
