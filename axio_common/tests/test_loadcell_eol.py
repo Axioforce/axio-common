@@ -266,3 +266,99 @@ def test_load_cell_recipes_produce_force_and_moment():
     # a dev-kit recipe still wins its own table
     assert job_outputs("force", {"DEVKIT_RECIPE": "set_xf_v1"}) == \
         {"force", "cop", "field"}
+
+
+# --- the check list is the SDK's (#1483) --------------------------------------
+
+def _sdk_checks():
+    """`CHECKS` of the load cell SDK's eol.py, read without importing it (it
+    needs the compiled core), or None when no checkout is found."""
+    import ast
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    roots = [os.environ.get("AXIOFORCE_LOADCELL_SDK")] + [
+        os.path.join(here, *[".."] * up, "axioforce-loadcell-sdk")
+        for up in (4, 5)]
+    for root in filter(None, roots):
+        path = os.path.join(root, "internal", "python",
+                            "axioforce_loadcell_internal", "eol.py")
+        if os.path.isfile(path):
+            tree = ast.parse(open(path, encoding="utf-8").read())
+            for node in tree.body:
+                if isinstance(node, ast.Assign) and any(
+                        getattr(t, "id", None) == "CHECKS" for t in node.targets):
+                    return tuple(ast.literal_eval(node.value))
+    return None
+
+
+def test_checks_equal_the_sdks():
+    sdk = _sdk_checks()
+    if sdk is None:
+        pytest.skip("no axioforce-loadcell-sdk checkout beside the repo")
+    assert LOADCELL_EOL_CHECKS == sdk
+
+
+# --- imu over CAN: skipped with a reason, not a failure (#1483) ----------------
+
+from axio_common.models import imu_can_skip_reason, loadcell_eol_verdict  # noqa: E402
+
+REASON = "the IMU is not available over CAN yet"
+
+
+def _checks(*, can=True, imu_present=True, samples=None, reason=REASON,
+            imu_passed=False, failing=()):
+    out = {c: {"passed": c not in failing, "detail": "", "data": {}}
+           for c in LOADCELL_EOL_CHECKS}
+    if can:
+        out["stream"]["data"]["can"] = {"identity_frames": 2}
+    data = {"imu_present": imu_present}
+    if samples is not None:
+        data["samples"] = samples
+    out["imu"] = {"passed": imu_passed, "detail": f"no IMU samples: {reason}"
+                  if reason else "", "data": data}
+    return out
+
+
+def test_imu_skipped_over_can_passes_and_says_why():
+    v = loadcell_eol_verdict(_checks())
+    assert v["passed"] and v["failing"] == [] and REASON in v["imu_skip_reason"]
+
+
+@pytest.mark.parametrize("kw", [
+    {"can": False},                     # over USB an IMU without samples fails
+    {"imu_present": False},             # an absent IMU is hardware, not a skip
+    {"imu_present": None},              # firmware that does not report it
+    {"samples": 0},                     # captured and read nothing: a failure
+    {"reason": ""},                     # a skip must say why
+])
+def test_imu_failures_that_are_not_a_can_skip(kw):
+    v = loadcell_eol_verdict(_checks(**kw))
+    assert not v["passed"] and v["failing"] == ["imu"] and \
+        v["imu_skip_reason"] is None
+
+
+def test_a_can_skip_does_not_excuse_another_failure():
+    v = loadcell_eol_verdict(_checks(failing=("temp",)))
+    assert not v["passed"] and v["failing"] == ["temp"]
+    assert v["imu_skip_reason"]
+
+
+def test_a_missing_check_is_not_a_pass():
+    c = _checks()
+    del c["rate"]
+    v = loadcell_eol_verdict(c)
+    assert not v["passed"] and v["missing"] == ["rate"]
+
+
+def test_a_passed_imu_is_not_a_skip():
+    assert imu_can_skip_reason(_checks(imu_passed=True, samples=500)) is None
+
+
+def test_certificate_says_imu_not_checked(db):
+    unit = _unit(db)
+    _calibrate(db, unit)
+    row = _eol(db)
+    row.imu_skip_reason = REASON
+    db.commit()
+    c = loadcell_certificate(db, SERIAL)
+    assert c.shippable and c.eol_skipped == {"imu": REASON}

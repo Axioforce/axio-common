@@ -22,6 +22,13 @@ training **job** whose model it carries and the **CRC of the pack** installed.
     the calibration certificate, assembled from those records (the server
     renders it). Nothing on it is a new fact.
 
+`imu` over CAN (#1483): the CAN IMU host side is unfinished, so a CAN run
+cannot capture IMU samples. `loadcell_eol_verdict()` accepts that one check
+as skipped-with-reason (`imu_can_skip_reason`), never failing the unit for
+it; the row records the reason (`imu_skip_reason`) and the
+`LOADCELL_IMU_CAN_SKIP` blocker, and the certificate prints it as not
+checked.
+
 The pass/fail limits of the check are **provisional** (placeholders, not yet
 set from real units, SDK `accuracy.PROVISIONAL_THRESHOLDS`); every row records
 the limits it was held to and whether they were provisional, and the
@@ -49,9 +56,14 @@ from axio_common.utils.model_utils import current_time
 #: rather than stored half-read.
 LOADCELL_EOL_SCHEMA = 1
 
-#: Every check a claimed pass must carry, passed (SDK `eol.CHECKS`).
-LOADCELL_EOL_CHECKS = ("identity", "model", "selftest", "stream", "tare",
-                       "accuracy")
+#: Every check a pass must carry, passed (SDK `eol.CHECKS`, same order; a
+#: test holds the two equal when the SDK checkout is beside this repo).
+LOADCELL_EOL_CHECKS = ("identity", "model", "selftest", "stream", "sensors",
+                       "temp", "rate", "imu", "tare", "accuracy")
+
+#: The blocker a pass carries when its `imu` check was skipped over CAN
+#: (`imu_can_skip_reason`).
+LOADCELL_IMU_CAN_SKIP = "IMU_NOT_CHECKED_OVER_CAN"
 
 #: The bench tool and the server's automatic row.
 LOADCELL_EOL_TOOL = "axio-loadcell-internal eol"
@@ -107,6 +119,10 @@ class LoadCellEolResult(Base):
     thresholds = Column(JSON, nullable=True)
     provisional = Column(Boolean, nullable=False, default=True)
     blockers = Column(JSON, nullable=True)
+    #: Set when the pass was accepted with `imu` skipped over CAN
+    #: (`imu_can_skip_reason`): the unit's IMU was never checked at end of
+    #: line, so it needs one once the CAN IMU host side exists.
+    imu_skip_reason = Column(Text, nullable=True)
 
     firmware_version = Column(String, nullable=True)
     #: IDENTIFY build_flavor: 0 development image, 1 release.
@@ -131,6 +147,49 @@ Index("ix_loadcell_eol_results_serial_time",
 
 def is_automatic_loadcell_eol(row) -> bool:
     return getattr(row, "tool", None) == LOADCELL_AUTO_EOL_TOOL
+
+
+def imu_can_skip_reason(checks) -> Optional[str]:
+    """The reason the `imu` check was skipped over CAN, or None.
+
+    The CAN IMU host side is not finished (#1487): over CAN the SDK cannot
+    capture IMU samples and reports `imu` not passed with the reason. That is
+    a skip, not a failure, only when all of these hold:
+      - the run was over CAN: `stream`'s data carries the CAN block (the
+        SDK's own evidence of the transport);
+      - the board said its IMU is present (`imu.data.imu_present` true): an
+        absent IMU is a hardware failure, never a skip;
+      - no IMU sample was captured (`samples` absent): a capture that read
+        badly is a failure;
+      - a reason is given (`detail`, or `reason` from a tool that marks
+        `skipped: true` itself).
+    """
+    if not isinstance(checks, dict):
+        return None
+    imu, stream = checks.get("imu"), checks.get("stream")
+    if not isinstance(imu, dict) or imu.get("passed") or             not isinstance(stream, dict):
+        return None
+    data = imu.get("data") if isinstance(imu.get("data"), dict) else {}
+    sdata = stream.get("data") if isinstance(stream.get("data"), dict) else {}
+    reason = str(imu.get("reason") or imu.get("detail") or "").strip()
+    if not isinstance(sdata.get("can"), dict) or not data.get("imu_present")             or "samples" in data or not reason:
+        return None
+    return reason
+
+
+def loadcell_eol_verdict(checks) -> dict:
+    """The server's verdict over a result's checks: `{"passed", "failing",
+    "missing", "imu_skip_reason"}`. Passed when every `LOADCELL_EOL_CHECKS`
+    is present and passed, except an `imu` skipped over CAN
+    (`imu_can_skip_reason`), which is not counted as failing."""
+    checks = checks if isinstance(checks, dict) else {}
+    skip = imu_can_skip_reason(checks)
+    failing = sorted(c for c, v in checks.items()
+                     if not (isinstance(v, dict) and v.get("passed"))
+                     and not (c == "imu" and skip))
+    missing = [c for c in LOADCELL_EOL_CHECKS if c not in checks]
+    return {"passed": not failing and not missing, "failing": failing,
+            "missing": missing, "imu_skip_reason": skip}
 
 
 def latest_calibration(db: Session, serial: str) -> Optional[LoadCellCalibration]:
@@ -283,6 +342,7 @@ class LoadCellEolResponse(BaseModel):
     thresholds: Optional[Dict[str, Any]] = None
     provisional: bool = True
     blockers: Optional[List[str]] = None
+    imu_skip_reason: Optional[str] = None
     firmware_version: Optional[str] = None
     build_flavor: Optional[int] = None
     operator: Optional[str] = None
@@ -356,6 +416,8 @@ class LoadCellCertificate(BaseModel):
     eol_station: Optional[str] = None
     eol_firmware_version: Optional[str] = None
     eol_checks: Dict[str, bool] = {}
+    #: Checks not performed, with why (`imu` over CAN): not failures.
+    eol_skipped: Dict[str, str] = {}
     eol_blockers: List[str] = []
     provisional: bool = True
     thresholds: Optional[Dict[str, Any]] = None
@@ -435,6 +497,8 @@ def loadcell_certificate(db: Session, serial) -> Optional[LoadCellCertificate]:
         eol_station=eol.station if eol is not None else None,
         eol_firmware_version=eol.firmware_version if eol is not None else None,
         eol_checks=checks,
+        eol_skipped=({"imu": eol.imu_skip_reason}
+                     if eol is not None and eol.imu_skip_reason else {}),
         eol_blockers=list(eol.blockers or []) if eol is not None else [],
         provisional=bool(eol.provisional) if eol is not None else True,
         thresholds=eol.thresholds if eol is not None else None,
@@ -449,6 +513,7 @@ def loadcell_certificate(db: Session, serial) -> Optional[LoadCellCertificate]:
 __all__ = [
     "LOADCELL_EOL_SCHEMA", "LOADCELL_EOL_CHECKS", "LOADCELL_EOL_TOOL",
     "LOADCELL_AUTO_EOL_TOOL", "LOADCELL_AUTO_EOL_CHECKS", "LOADCELL_OUTPUTS",
+    "LOADCELL_IMU_CAN_SKIP", "imu_can_skip_reason", "loadcell_eol_verdict",
     "LOADCELL_OUTPUT_UNITS",
     "LoadCellEolResult", "is_automatic_loadcell_eol", "latest_calibration",
     "loadcell_shippability", "LoadCellEolRequest", "LoadCellEolResponse",

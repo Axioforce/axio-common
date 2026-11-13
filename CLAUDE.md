@@ -248,7 +248,8 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   (`loadcell_eol_results`, append-only, FK `serial` -> `loadcell_units`): one run as the SDK's
   `axio-loadcell-internal eol` writes it (`LoadCellEolRequest` takes that document as is, `schema` on the wire):
   `job_id` + `job_timestamp` (the integer UID), the board's pack (`model_version`, `model_crc32`), `passed`,
-  `simulated`, `checks` (`LOADCELL_EOL_CHECKS` = identity model selftest stream tare accuracy), `figures` (the
+  `simulated`, `checks` (`LOADCELL_EOL_CHECKS` = identity model selftest stream sensors temp rate imu tare accuracy, the SDK's
+  `eol.CHECKS` in its order since v0.84.0, #1483; a test holds them equal when the SDK checkout is beside the repo), `figures` (the
   SDK `accuracy.figures`: per axis Fx..Tz MAE / max / RMSE / NRMSE and %FS where rated, per activity,
   repeatability), `thresholds` + `provisional` (the limits are placeholders until real units set them),
   `blockers`, firmware version, `build_flavor`, operator, station, tool. The server's automatic row
@@ -259,7 +260,13 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   the same pack re-installed included, revokes it until a new EOL. `reason` is always a sentence.
   `loadcell_certificate(db, serial)` -> `LoadCellCertificate` (unit, type and name, pack version + CRC,
   calibration date, job, the EOL shown and its operator/station/firmware/checks/blockers, `provisional`, per-axis
-  `axes`, `by_activity`); the server renders it. Tests: `tests/test_loadcell_eol.py` (SQLite).
+  `axes`, `by_activity`, `eol_skipped`); the server renders it. **`imu` over CAN** (v0.84.0, #1483): the CAN IMU
+  host side is unfinished, so `loadcell_eol_verdict(checks)` (the server's verdict: every check present and
+  passed) does not count an `imu` that `imu_can_skip_reason(checks)` names as skipped: only when `stream`'s data
+  carries the CAN block, the board reported `imu_present`, no sample was captured and a reason is given. Anything
+  else (USB, IMU absent, a capture that read badly, no reason) stays a failure. The row stores the reason in
+  `imu_skip_reason` (Alembic `loadcell_eol_imu_skip_reason`) and the pass carries the `LOADCELL_IMU_CAN_SKIP`
+  blocker; such units still need an IMU check once CAN delivers it. Tests: `tests/test_loadcell_eol.py` (SQLite).
 - **Dev-kit bases and shipments** (v0.77.0, Dyno #1401 / #1403, `models/devkit_shipping.py`). **`DevkitBase`**
   (`devkit_bases`, PK `mcu_uid`: 24 uppercase hex via `devkit.format_mcu_uid`, all zeros refused, never the load
   cell's lowercase helper) is the base board's own record, which it lacked while identity follows the flex: `state`

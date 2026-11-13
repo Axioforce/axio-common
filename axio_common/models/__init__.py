@@ -51,8 +51,9 @@ from .loadcell_eol import (
     LoadCellEolResult, LoadCellEolRequest, LoadCellEolResponse,
     LoadCellShippabilityResponse, LoadCellCertificate, LoadCellCertificateAxis,
     LOADCELL_EOL_SCHEMA, LOADCELL_EOL_CHECKS, LOADCELL_EOL_TOOL,
-    LOADCELL_AUTO_EOL_TOOL, LOADCELL_AUTO_EOL_CHECKS,
+    LOADCELL_AUTO_EOL_TOOL, LOADCELL_AUTO_EOL_CHECKS, LOADCELL_IMU_CAN_SKIP,
     is_automatic_loadcell_eol, loadcell_shippability, loadcell_certificate,
+    imu_can_skip_reason, loadcell_eol_verdict,
 )
 from .loadcell_capture import (
     LoadCellCaptureSession, LoadCellCaptureFile,
@@ -202,6 +203,7 @@ __all__ = [
     "LoadCellCertificateAxis", "LOADCELL_EOL_SCHEMA", "LOADCELL_EOL_CHECKS",
     "LOADCELL_EOL_TOOL", "LOADCELL_AUTO_EOL_TOOL", "LOADCELL_AUTO_EOL_CHECKS",
     "is_automatic_loadcell_eol", "loadcell_shippability", "loadcell_certificate",
+    "LOADCELL_IMU_CAN_SKIP", "imu_can_skip_reason", "loadcell_eol_verdict",
     "loadcell_job_config", "loadcell_job_fields", "loadcell_job_type",
     "DevkitPadStiffness", "DevkitPadStiffnessResponse", "PadStiffnessSummary",
     "PAD_STIFFNESS_STATUSES", "PAD_STIFFNESS_MEASURED",
