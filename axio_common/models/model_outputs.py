@@ -49,6 +49,9 @@ DEVKIT_RECIPE_OUTPUTS = {
     "cop_xf_v1": (OUTPUT_COP,),
     "field_xf_v1": (OUTPUT_FIELD,),
     "set_xf_v1": (OUTPUT_FORCE, OUTPUT_COP, OUTPUT_FIELD),
+    # #1471: sphere field targets sized for the flex's own pad (the job carries DEVKIT_PAD_E_MPA)
+    "field_xf_v2": (OUTPUT_FIELD,),
+    "set_xf_v2": (OUTPUT_FORCE, OUTPUT_COP, OUTPUT_FIELD),
 }
 
 

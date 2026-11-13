@@ -19,6 +19,11 @@ def test_set_recipe_job_produces_all_three():
     assert job_outputs("force", cfg) == {"force", "cop", "field"}
 
 
+def test_v2_recipes_1471():
+    assert job_outputs("force", {"DEVKIT_RECIPE": "set_xf_v2"}) == {"force", "cop", "field"}
+    assert job_outputs("force", {"DEVKIT_RECIPE": "field_xf_v2"}) == {"field"}
+
+
 def test_single_model_recipes():
     assert job_outputs("force", {"DEVKIT_RECIPE": "force_xf_v1"}) == {"force"}
     assert job_outputs("force", {"DEVKIT_RECIPE": "cop_xf_v1"}) == {"cop"}
