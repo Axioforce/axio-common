@@ -238,3 +238,5 @@ class ClientShutdownRequest(BaseModel):
 class ShutdownResponse(BaseModel):
     shutdown: bool
     status: Optional[str] = None
+    attempt: Optional[int] = None
+    hostname: Optional[str] = None

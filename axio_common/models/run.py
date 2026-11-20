@@ -20,6 +20,7 @@ class CompleteRunRequest(BaseModel):
     test_metrics: dict
     epochs_completed: int
     hostname: str
+    attempt: Optional[int] = None  # job lease (#1585); absent = legacy caller
 
 
 class RunResponse(BaseModel):

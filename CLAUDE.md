@@ -100,6 +100,15 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   (`queued`→assigned→…), `priority`, `failure_count`, `allowed_hostnames` (targeted-daemon array), heartbeat and
   lifecycle timestamps. Assignment order is `priority DESC, queued_at ASC` (composite indexes defined on the model).
   `Run` cascades delete from `Job`.
+  - **Job leases** (Dyno #1585, contract: Neuralizer `docs/DAEMON_CONTROL.md` section 2): `attempt` (bumped by
+    axio-server's fetch; in the job dict and `ShutdownResponse`), `requeue_cause` (`heartbeat` | `interrupted` |
+    `operator`), `error_requeues` (capped at `MAX_ERROR_REQUEUES = 5`), `excluded_hostnames` (hosts that reported
+    `interrupt_kind: machine`; fetch skips them). `LEASE_HELD_STATUSES` is where the current attempt still owns the
+    job. `RECLAIM_GRACE_SECONDS = 300`: after a heartbeat requeue (`stopped_at`, which only the requeue sets)
+    axio-server's fetch hands the job only to its own host for that long. The six worker request bodies take an optional `attempt` (absent = legacy, no check);
+    `UpdateJobStatusRequest` also takes `interrupt_kind`. `utils/shared.requeue_missed_heartbeats(db)` is the
+    **only** missed-heartbeat requeue (axio-server's monitor and `check_heartbeats` call it): one transaction,
+    `FOR UPDATE SKIP LOCKED`, staleness in the WHERE, so two servers can run it at once.
   - ⚠️ **`Job.timestamp` is a `BigInteger`, NOT a datetime.** It's a packed `YYYYMMDDHHMMSS` integer
     (e.g. `20210101120000`) that also serves as the human-scannable **job UID** — it's the `<timestamp>` segment
     of the model filename `{axf}-{timestamp}-{run}-{f|m}`. Keep it and surface it **as the integer**; do NOT convert

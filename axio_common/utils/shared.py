@@ -1,8 +1,10 @@
+from datetime import timedelta
 from typing import Optional
 from sqlalchemy.orm import Session
 
 from axio_common.models import Device, Job, Client
 from axio_common.logger import logger, hostname_filter
+from axio_common.utils.model_utils import current_time
 
 
 MAX_TIME_DIFF = 600  # Maximum time difference in seconds between current time and last heartbeat
@@ -124,3 +126,48 @@ def update_job_status(job, status: str, db: Session, hostname=None, reason=None)
 
     logger.info(f"Job {job.id} status updated to {status}")
     return job
+
+
+def requeue_missed_heartbeats(db: Session) -> int:
+    """Requeue every `running`/`assigned` job whose last heartbeat is older than
+    MAX_TIME_DIFF, with `requeue_cause = "heartbeat"` so the worker that held
+    it may reclaim it (job leases, #1585). The only place a missed heartbeat
+    requeues a job: axio-server's monitor runs it every 60 s and
+    `POST /management/check_heartbeats/` on demand. Returns how many it requeued.
+
+    Safe to run concurrently (one per Fly machine): the rows are locked with
+    SKIP LOCKED and the staleness test is in the WHERE clause, so Postgres
+    re-checks it against a heartbeat that committed meanwhile, and nothing is
+    committed until every row is done (a mid-loop commit would release the
+    locks on the rows not yet handled)."""
+    cutoff = current_time() - timedelta(seconds=MAX_TIME_DIFF)
+    jobs = (
+        db.query(Job)
+        .filter(Job.status.in_(["running", "assigned"]), Job.last_heartbeat < cutoff)
+        .with_for_update(skip_locked=True)
+        .all()
+    )
+    for job in jobs:
+        logger.warning(f"Job {job.id} missed heartbeat")
+        # Only a 'running' job holds an active-job slot (counted on its first
+        # progress report). Adjusted inline: Client's helpers commit.
+        if job.status == "running" and job.hostname:
+            client = db.query(Client).filter(Client.hostname == job.hostname).first()
+            if client:
+                client.active_jobs = max(0, (client.active_jobs or 0) - 1)
+        job.status = "queued"
+        job.requeue_cause = "heartbeat"
+        job.stopped_at = current_time()
+        job.failure_count = (job.failure_count or 0) + 1
+        # Record WHY so the dashboard can explain this silent requeue: the
+        # worker never reported a reason; it went unresponsive.
+        job.failure_reason = (
+            f"Requeued: missed heartbeat — worker "
+            f"'{job.hostname or '?'}' went unresponsive "
+            f"(no heartbeat for >{int(MAX_TIME_DIFF)}s). Likely a "
+            f"hard kill (OOM/SIGKILL), machine reboot, or network "
+            f"drop; no Python traceback was reported."
+        )
+        logger.info(f"Job {job.id} moved back to queue")
+    db.commit()
+    return len(jobs)

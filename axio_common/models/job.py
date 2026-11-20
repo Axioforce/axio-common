@@ -18,6 +18,18 @@ from axio_common.utils.model_utils import current_time
 # job is pushed to the back of its priority tier. Lower = more aggressive.
 RETRY_PUSHBACK_THRESHOLD = 1
 
+# Requeues for errors (`interrupted` with interrupt_kind `error` or `machine`)
+# before the job ends `failed` instead of going back to the queue (#1585).
+MAX_ERROR_REQUEUES = 5
+
+# After a heartbeat requeue, only the job's own host may fetch it for this long,
+# so its worker can reclaim it before an idle machine takes it (#1585).
+RECLAIM_GRACE_SECONDS = 300
+
+# The statuses in which the worker holding the current attempt still owns the
+# job (job leases, #1585).
+LEASE_HELD_STATUSES = ("assigned", "running", "shutting_down", "interrupted")
+
 
 class UpdateJobProgressRequest(BaseModel):
     job_id: str
@@ -25,6 +37,7 @@ class UpdateJobProgressRequest(BaseModel):
     total_runs: int
     run_config: dict
     hostname: str
+    attempt: Optional[int] = None
 
 
 class UpdateJobEpochRequest(BaseModel):
@@ -43,6 +56,7 @@ class UpdateJobEpochRequest(BaseModel):
     lr: Optional[float] = None
     elapsed_s: Optional[float] = None
     eta_s: Optional[float] = None
+    attempt: Optional[int] = None
 
 
 class JobResponse(BaseModel):
@@ -71,6 +85,10 @@ class JobResponse(BaseModel):
     allowed_hostnames: Optional[List[str]] = None
     live_progress: Optional[dict] = None
     failure_reason: Optional[str] = None
+    attempt: int = 0
+    requeue_cause: Optional[str] = None
+    error_requeues: int = 0
+    excluded_hostnames: Optional[List[str]] = None
 
     class Config:
         from_attributes = True  # Enables SQLAlchemy model compatibility
@@ -135,6 +153,18 @@ class Job(Base):
     # hostname matches one of these can fetch it. Used for targeted
     # rollouts/dogfooding ("send this job specifically to my dev box").
     allowed_hostnames = Column(ARRAY(String), nullable=True)
+
+    # Job leases (#1585). `attempt` counts fetches: the worker sends it back and
+    # a call from an older attempt is refused (409 lease_lost). `requeue_cause`
+    # says why the job last went back to the queue (`heartbeat` | `interrupted`
+    # | `operator`); only a `heartbeat` requeue may be reclaimed by the worker
+    # that held it. `error_requeues` counts `error`/`machine` interruptions
+    # toward MAX_ERROR_REQUEUES. `excluded_hostnames` are daemons that reported
+    # this job cannot run on their machine; fetch never hands it to them again.
+    attempt = Column(Integer, nullable=False, default=0, server_default="0")
+    requeue_cause = Column(Text, nullable=True)
+    error_requeues = Column(Integer, nullable=False, default=0, server_default="0")
+    excluded_hostnames = Column(ARRAY(String), nullable=True)
 
     # Relationships
     device = relationship("Device", back_populates="jobs", lazy="select")
@@ -389,6 +419,10 @@ class Job(Base):
             "allowed_hostnames": list(self.allowed_hostnames) if self.allowed_hostnames else None,
             "live_progress": self.live_progress,
             "failure_reason": self.failure_reason,
+            "attempt": self.attempt,
+            "requeue_cause": self.requeue_cause,
+            "error_requeues": self.error_requeues,
+            "excluded_hostnames": list(self.excluded_hostnames) if self.excluded_hostnames else None,
         }
 
     @classmethod
@@ -454,16 +488,22 @@ class UpdateJobStatusRequest(BaseModel):
     # exception summary the worker classified. Optional so older workers/servers
     # interoperate (extra field ignored by old servers; absent from old workers).
     reason: Optional[str] = None
+    # Job leases (#1585): every field below is optional; absent = legacy caller.
+    attempt: Optional[int] = None
+    # With status 'interrupted': error (default) | operator | shutdown | machine.
+    interrupt_kind: Optional[str] = None
 
 
 class HeartbeatRequest(BaseModel):
     hostname: str
     job_id: str
+    attempt: Optional[int] = None
 
 
 class CompleteJobRequest(BaseModel):
     hostname: str
     job_id: str
+    attempt: Optional[int] = None
 
 
 class GetJobStatus(BaseModel):
