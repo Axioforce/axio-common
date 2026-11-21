@@ -138,9 +138,16 @@ class Client(Base):
         """
         Shutdown a specific job on the client and log the action.
         """
-        from axio_common.utils.shared import update_job_status
+        from axio_common.utils.shared import get_job_by_id, update_job_status
+        job = get_job_by_id(job_id, db)
+        # Only a job some worker holds can be told to stop. Anything else
+        # (already ended, or back in the queue) would sit in shutting_down
+        # forever, because no worker is left to report it.
+        if not job or job.status not in ("assigned", "running"):
+            logger.info(f"Job {job_id} is not running ({job.status if job else 'not found'}): nothing to shut down.")
+            return
         logger.info(f"Job {job_id} on {self.hostname} is shutting down.")
-        update_job_status(job_id, "shutting_down", db)
+        update_job_status(job, "shutting_down", db)
 
     def update_job_tracking(self, new_job: bool, duration: float, db: Session):
         if new_job:

@@ -169,5 +169,18 @@ def requeue_missed_heartbeats(db: Session) -> int:
             f"drop; no Python traceback was reported."
         )
         logger.info(f"Job {job.id} moved back to queue")
+    # A dashboard kill the job never answered and whose worker has gone quiet:
+    # nothing is left to report it, so close it here. Cancelled, not requeued:
+    # the operator asked for it to stop.
+    killed = (
+        db.query(Job)
+        .filter(Job.status == "shutting_down", Job.last_heartbeat < cutoff)
+        .with_for_update(skip_locked=True)
+        .all()
+    )
+    for job in killed:
+        logger.warning(f"Job {job.id} was shutting down and missed its heartbeat: cancelled")
+        job.status = "cancelled"
+        job.stopped_at = current_time()
     db.commit()
     return len(jobs)
