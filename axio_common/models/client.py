@@ -247,3 +247,4 @@ class ShutdownResponse(BaseModel):
     status: Optional[str] = None
     attempt: Optional[int] = None
     hostname: Optional[str] = None
+    failure_reason: Optional[str] = None
