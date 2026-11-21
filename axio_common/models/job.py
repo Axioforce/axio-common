@@ -477,6 +477,9 @@ class JobRequest(BaseModel):
 class FetchJobRequest(BaseModel):
     hostname: str
     daemon: bool
+    # Jobs the worker still tracks. Fetch never hands those back: a requeued job
+    # whose process is alive is reclaimed, not started again as a new attempt.
+    holding: Optional[List[str]] = None
 
 
 class UpdateJobStatusRequest(BaseModel):
