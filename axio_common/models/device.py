@@ -63,6 +63,27 @@ def current_devkit_recipe() -> str:
     return (os.environ.get(DEVKIT_CURRENT_RECIPE_ENV) or "").strip() or DEFAULT_DEVKIT_CURRENT_RECIPE
 
 
+#: Lag-stacked models (`LAG_TAPS_MS` in the job config) are experiments until the
+#: consumers can run them, so they never become a device's best model (#1595).
+#: Set `LAG_MODELS_IN_BEST=1` the day lag models are production.
+LAG_MODELS_IN_BEST_ENV = "LAG_MODELS_IN_BEST"
+
+
+def job_is_lag(job) -> bool:
+    """True when the job trained a lag-stacked model. Unreadable config: False."""
+    try:
+        return bool(json.loads(job.config or "{}").get("LAG_TAPS_MS"))
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
+def job_counts_for_best(job) -> bool:
+    """False for a lag job while lag models are kept out of the best pointer."""
+    if (os.environ.get(LAG_MODELS_IN_BEST_ENV) or "").strip() == "1":
+        return True
+    return not job_is_lag(job)
+
+
 def job_devkit_recipe(job) -> Optional[str]:
     """A job's DEVKIT_RECIPE from its config, None when absent or unreadable."""
     try:
@@ -216,6 +237,11 @@ class Device(Base):
             logger.warning(f"Unknown model type '{job.model_type}' for device {self.axf_id}")
             return
 
+        if not job_counts_for_best(job):
+            logger.info(f"Device {self.axf_id}: run {job.timestamp}/{run_number} is a lag model, "
+                        f"kept out of the best {job.model_type} pointer")
+            return
+
         if self.is_pinned(job.model_type):
             logger.info(
                 f"Device {self.axf_id} best {job.model_type} is pinned to "
@@ -317,6 +343,8 @@ class Device(Base):
 
             best_key, best_value, best_run = None, float("inf"), None
             for run in runs:
+                if not job_counts_for_best(run.job):
+                    continue
                 tm = run.test_metrics or {}
                 block = tm.get(activity) or tm.get("all")
                 if not block or metric not in block:

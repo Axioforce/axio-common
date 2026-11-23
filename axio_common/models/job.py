@@ -475,6 +475,9 @@ class JobRequest(BaseModel):
     # Restrict which daemons can pick up this job. None or [] = any daemon
     # (historical behavior). A list of hostnames = only those daemons.
     allowed_hostnames: Optional[List[str]] = None
+    # Queue priority (higher is fetched first, default 0). A negative value puts
+    # the job behind everything submitted normally (#1595).
+    priority: Optional[int] = None
 
 
 class FetchJobRequest(BaseModel):
