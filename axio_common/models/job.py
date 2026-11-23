@@ -183,7 +183,9 @@ class Job(Base):
         a short worker-supplied exception summary shown on the dashboard. It is
         RETAINED across re-assignment (not cleared), so a job that was
         interrupted, requeued, and is now running again still shows why it was
-        requeued; the next failure overwrites it.
+        requeued; the next failure overwrites it. It is cleared when the job
+        completes: a completed job carries no failure reason (failure_count and
+        requeue_cause remain as the record that it was requeued).
         """
         prior_status = self.status
         logger.info(f"Job {self.id} status updated: {prior_status} -> {status}")
@@ -195,6 +197,7 @@ class Job(Base):
             self.heartbeat(db)
         elif status == "completed":
             self.completed_at = current_time()
+            self.failure_reason = None
         elif status == "interrupted":
             self.interrupted_at = current_time()
             if self.hostname:
