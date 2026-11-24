@@ -1,9 +1,11 @@
-"""Lag-stacked models are kept out of a device's best pointer (Dyno #1595).
+"""Models the apps cannot run are kept out of a force plate's best pointer (Dyno #1595).
 
-SQLite in memory: devices, jobs and runs only. A lag job (LAG_TAPS_MS in its
-config) with the lowest MAE must not become the best model, on run completion
-or on a recompute, until LAG_MODELS_IN_BEST=1; an existing pointer on a lag job
-is moved off it by a recompute; a pin on a lag job is a person's choice and stays.
+SQLite in memory: devices, jobs and runs only. On a plate, a lag job
+(LAG_TAPS_MS) with the lowest MAE must not become the best model, on run
+completion or on a recompute, until LAG_MODELS_IN_BEST=1; neither must a
+baseline-delta job (USE_BASELINE_DELTA), which has no switch. An existing
+pointer on such a job is moved off it by a recompute; a pin is a person's
+choice and stays. Other device families are judged as before.
 """
 import json
 
@@ -159,6 +161,38 @@ def test_an_empty_tap_list_or_bad_config_is_not_a_lag_job(db):
     d = device(db)
     d.recompute_best_metrics(db)
     assert head(d) == (20261102120000, 1)
+
+
+def test_a_baseline_delta_job_is_kept_out_and_has_no_switch(db, monkeypatch):
+    prod = job(db, 20261101120000)
+    run(db, prod, 1, metrics(2.0))
+    gbd = job(db, 20261102120000, json.dumps({"USE_BASELINE_DELTA": True}))
+    run(db, gbd, 1, metrics(1.2))
+    d = device(db)
+    d._set_head("force", db.query(Run).filter(Run.job_id == gbd.id).one())
+    d.recompute_best_metrics(db)
+    assert head(d) == (20261101120000, 1)
+    monkeypatch.setenv(LAG_MODELS_IN_BEST_ENV, "1")
+    d.recompute_best_metrics(db)
+    assert head(d) == (20261101120000, 1)
+
+
+def test_other_device_families_are_judged_as_before(db):
+    """An Axiocell or dev-kit lag model still becomes its device's best."""
+    for axf in ("af.b1595a02", "18.b1595a03"):
+        db.add(Device(axf_id=axf))
+        db.flush()
+        plain = Job(id=f"p-{axf}", device_axf_id=axf, model_type="force", config="{}", status="completed",
+                    timestamp=20261101120000)
+        lag = Job(id=f"l-{axf}", device_axf_id=axf, model_type="force", config=LAG, status="completed",
+                  timestamp=20261102120000)
+        db.add_all([plain, lag])
+        db.flush()
+        run(db, plain, 1, metrics(2.0))
+        run(db, lag, 1, metrics(1.2))
+        d = db.query(Device).filter(Device.axf_id == axf).one()
+        d.recompute_best_metrics(db)
+        assert head(d)[0] == 20261102120000, axf
 
 
 def test_the_submit_request_takes_an_optional_priority():

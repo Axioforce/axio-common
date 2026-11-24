@@ -63,25 +63,44 @@ def current_devkit_recipe() -> str:
     return (os.environ.get(DEVKIT_CURRENT_RECIPE_ENV) or "").strip() or DEFAULT_DEVKIT_CURRENT_RECIPE
 
 
-#: Lag-stacked models (`LAG_TAPS_MS` in the job config) are experiments until the
-#: consumers can run them, so they never become a device's best model (#1595).
-#: Set `LAG_MODELS_IN_BEST=1` the day lag models are production.
+#: On a force plate, a model the apps cannot run never becomes the device's best
+#: model (#1595): a lag-stacked one (`LAG_TAPS_MS`; set `LAG_MODELS_IN_BEST=1`
+#: the day lag models are production) and a baseline-delta one
+#: (`USE_BASELINE_DELTA`, which needs inputs no consumer feeds). Other device
+#: families are not covered: their lag models are judged as before.
 LAG_MODELS_IN_BEST_ENV = "LAG_MODELS_IN_BEST"
+PLATE_FAMILIES = ("lite", "lp", "xl")
+
+
+def _job_config(job) -> dict:
+    try:
+        cfg = json.loads(job.config or "{}")
+        return cfg if isinstance(cfg, dict) else {}
+    except (ValueError, TypeError, AttributeError):
+        return {}
 
 
 def job_is_lag(job) -> bool:
     """True when the job trained a lag-stacked model. Unreadable config: False."""
-    try:
-        return bool(json.loads(job.config or "{}").get("LAG_TAPS_MS"))
-    except (ValueError, TypeError, AttributeError):
-        return False
+    return bool(_job_config(job).get("LAG_TAPS_MS"))
+
+
+def job_is_baseline_delta(job) -> bool:
+    """True when the job trained a baseline-delta (gbd) model."""
+    return bool(_job_config(job).get("USE_BASELINE_DELTA"))
 
 
 def job_counts_for_best(job) -> bool:
-    """False for a lag job while lag models are kept out of the best pointer."""
-    if (os.environ.get(LAG_MODELS_IN_BEST_ENV) or "").strip() == "1":
+    """False for a force-plate job whose model the apps cannot run (see above)."""
+    from axio_common.storage.activities import family_for_type_id
+    type_id = (getattr(job, "device_axf_id", None) or "").split(".")[0]
+    if family_for_type_id(type_id) not in PLATE_FAMILIES:
         return True
-    return not job_is_lag(job)
+    if job_is_baseline_delta(job):
+        return False
+    if job_is_lag(job) and (os.environ.get(LAG_MODELS_IN_BEST_ENV) or "").strip() != "1":
+        return False
+    return True
 
 
 def job_devkit_recipe(job) -> Optional[str]:
@@ -238,8 +257,8 @@ class Device(Base):
             return
 
         if not job_counts_for_best(job):
-            logger.info(f"Device {self.axf_id}: run {job.timestamp}/{run_number} is a lag model, "
-                        f"kept out of the best {job.model_type} pointer")
+            logger.info(f"Device {self.axf_id}: run {job.timestamp}/{run_number} is a lag or "
+                        f"baseline-delta model, kept out of the best {job.model_type} pointer")
             return
 
         if self.is_pinned(job.model_type):

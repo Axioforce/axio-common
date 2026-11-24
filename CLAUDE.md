@@ -96,11 +96,13 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
     head only. The pin is in `best_metrics()` (`pinned`, `pinned_at`, `pinned_by`, `pin_note` per head) and
     `DeviceResponse`. Nothing pins automatically. Why: a thermal-normalized retrain (#1299) equals the old model at
     the calibration temperature and beats it away from it, so it never wins on MAE.
-  - **Lag-stacked models are kept out of the best pointer** (v0.86.0, Dyno #1595). A job whose config has a
-    non-empty `LAG_TAPS_MS` (`job_is_lag`) never becomes a head, on run completion or on a recompute, and a
-    recompute moves a head off one: no consumer can run a lag model yet, so it must not be the shipped model.
-    The job keeps its own best run (`Run.is_best`). A pin on a lag job is a person's choice and stays.
-    `LAG_MODELS_IN_BEST=1` lets them compete, for the day lag models are production (then recompute the fleet).
+  - **On a force plate, a model the apps cannot run is kept out of the best pointer** (v0.86.1, Dyno #1595;
+    `job_counts_for_best`, families `lite` / `lp` / `xl` only). A job whose config has a non-empty `LAG_TAPS_MS`
+    (`job_is_lag`) or a truthy `USE_BASELINE_DELTA` (`job_is_baseline_delta`) never becomes a head, on run
+    completion or on a recompute, and a recompute moves a head off one. The job keeps its own best run
+    (`Run.is_best`). A pin on such a job is a person's choice and stays. `LAG_MODELS_IN_BEST=1` lets lag models
+    compete, for the day they are production (then recompute the fleet); baseline-delta has no switch. Axiocell,
+    dev-kit and every other family are judged as before: their lag models still become best.
 - **`Job`** (`jobs`, PK uuid) → **`Run`** (`runs`) — the NN training job queue. Job carries `status`
   (`queued`→assigned→…), `priority`, `failure_count`, `allowed_hostnames` (targeted-daemon array), heartbeat and
   lifecycle timestamps. Assignment order is `priority DESC, queued_at ASC` (composite indexes defined on the model).
