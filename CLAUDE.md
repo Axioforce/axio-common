@@ -108,6 +108,13 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   lifecycle timestamps. Assignment order is `priority DESC, queued_at ASC` (composite indexes defined on the model).
   `JobRequest` (the submit body) takes an optional `priority` (v0.86.0; negative = behind every normal job).
   `Run` cascades delete from `Job`.
+  - **A job's runs may train at the same time** (v0.86.2, Neuralizer #1621). `Job.complete_run` completes the
+    run the request names (the newest open row of that number; all rows complete = no-op, so the router answers
+    "already finalized"; no row of that number = the current run, as before). `Job.update_epoch` keeps
+    `live_progress["runs"]`, one entry per run still reporting, keyed by run number, each with its own loss
+    history; the top level is still the run that reported last. A run leaves `runs` when it completes or after
+    `Job.RUN_SILENT_S` (15 min) without a ping. `Job.run_number` and `Run.is_current` are then only the run that
+    started last: do not read them as "the run in progress".
   - **Job leases** (Dyno #1585, contract: Neuralizer `docs/DAEMON_CONTROL.md` section 2): `attempt` (bumped by
     axio-server's fetch; in the job dict and `ShutdownResponse`), `requeue_cause` (`heartbeat` | `interrupted` |
     `operator`), `error_requeues` (capped at `MAX_ERROR_REQUEUES = 5`), `excluded_hostnames` (hosts that reported

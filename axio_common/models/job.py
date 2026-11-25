@@ -286,6 +286,16 @@ class Job(Base):
     # bounding the JSON size.
     LOSS_HISTORY_CAP = 120
 
+    RUN_SILENT_S = 900
+    LIVE_RUNS_CAP = 32
+
+    @staticmethod
+    def _pinged_since(entry, now):
+        try:
+            return (now - datetime.fromisoformat(entry["updated_at"])).total_seconds() < Job.RUN_SILENT_S
+        except (KeyError, TypeError, ValueError):
+            return False
+
     def update_epoch(self, update, db: Session):
         """Refresh live per-epoch progress for the dashboard. No status/Run
         side effects and no-op-safe: a ping for a job that's no longer running
@@ -297,8 +307,11 @@ class Job(Base):
         only polls every few minutes, so this must be accumulated server-side
         from the individual pings, not on the client."""
         prev = self.live_progress if isinstance(self.live_progress, dict) else {}
-        same_run = prev.get("run_number") == update.run_number
-        history = prev.get("loss_history") if same_run else None
+        runs = prev.get("runs") if isinstance(prev.get("runs"), dict) else {}
+        key = str(update.run_number)
+        # A record written before `runs` existed holds one run at the top level.
+        mine = runs.get(key) or (prev if prev.get("run_number") == update.run_number else {})
+        history = mine.get("loss_history")
         if not isinstance(history, list):
             history = []
         if update.loss is not None:
@@ -306,7 +319,8 @@ class Job(Base):
             if len(history) > self.LOSS_HISTORY_CAP:
                 history = history[-self.LOSS_HISTORY_CAP:]
 
-        self.live_progress = {
+        now = current_time()
+        entry = {
             "run_number": update.run_number,
             "total_runs": update.total_runs,
             "epoch": update.epoch,
@@ -317,8 +331,16 @@ class Job(Base):
             "elapsed_s": update.elapsed_s,
             "eta_s": update.eta_s,
             "loss_history": history,
-            "updated_at": current_time().isoformat(),
+            "updated_at": now.isoformat(),
         }
+        # The top level is the run that reported last, as before. `runs` holds every
+        # run still reporting (a job's runs may train at the same time, #1621): a run
+        # leaves it when it completes, or after RUN_SILENT_S without a ping (killed,
+        # or left behind by a requeue).
+        live = {k: v for k, v in runs.items() if k != key and self._pinged_since(v, now)}
+        live[key] = entry
+        newest = sorted(live.items(), key=lambda kv: kv[1]["updated_at"])[-self.LIVE_RUNS_CAP:]
+        self.live_progress = {**entry, "runs": dict(sorted(newest, key=lambda kv: int(kv[0])))}
         # Doubles as a heartbeat — a mid-fit run that's actively pinging epochs
         # shouldn't be reaped by the missed-heartbeat monitor.
         self.last_heartbeat = current_time()
@@ -349,6 +371,9 @@ class Job(Base):
             return
 
         run.complete(self, update, db)
+        if isinstance(self.live_progress, dict) and isinstance(self.live_progress.get("runs"), dict):
+            left = {k: v for k, v in self.live_progress["runs"].items() if k != str(update.run_number)}
+            self.live_progress = {**self.live_progress, "runs": left}
 
         self.duration = (run.completed_at - self.assigned_at).total_seconds()
 
