@@ -326,13 +326,26 @@ class Job(Base):
 
     def complete_run(self, update, db):
         """
-        Complete the current run and log the results.
+        Complete the run the client names and log the results.
+
+        The run is found by its number, not as "the current run": a job's runs may
+        train at the same time (Neuralizer #1621), and then the current run is only
+        the one that started last. The newest open row of that number is the one in
+        progress (a requeue leaves older rows of the same number behind). When every
+        row of that number is already complete there is nothing to do: None, and the
+        caller answers "already finalized". A number with no row at all falls back
+        to the current run, as before.
         """
         from axio_common.models import Run
         logger.info(f"Job {self.id} run {update.run_number} completed")
-        run = db.query(Run).filter(Run.job_id == self.id, Run.is_current).first()
+        numbered = (db.query(Run).filter(Run.job_id == self.id, Run.number == update.run_number)
+                    .order_by(Run.created_at.desc()).all())
+        if numbered:
+            run = next((r for r in numbered if r.completed_at is None), None)
+        else:
+            run = db.query(Run).filter(Run.job_id == self.id, Run.is_current).first()
         if not run:
-            logger.error(f"No current run found for job {self.id}")
+            logger.error(f"No run {update.run_number} in progress for job {self.id}")
             return
 
         run.complete(self, update, db)
