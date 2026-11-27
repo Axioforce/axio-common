@@ -362,7 +362,7 @@ class Device(Base):
 
             best_key, best_value, best_run = None, float("inf"), None
             for run in runs:
-                if not job_counts_for_best(run.job):
+                if not job_counts_for_best(run.job) or run.is_extra_output(run.job):
                     continue
                 tm = run.test_metrics or {}
                 block = tm.get(activity) or tm.get("all")
@@ -512,6 +512,9 @@ class Device(Base):
         )
         if run is None:
             raise BestPinNotFound(f"job {job_timestamp} of {self.axf_id} has no run {run_number}")
+        if run.is_extra_output(run.job):
+            raise BestPinRefused(
+                f"run {job_timestamp}/{run_number} is the job's {run.output} run, not a {model_type} model")
         block = (run.test_metrics or {}).get("TE-all") or {}
         try:
             value = float(block["mae"][HEAD_AXIS[model_type]])

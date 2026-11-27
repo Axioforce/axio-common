@@ -108,6 +108,14 @@ The schema models the hardware-to-delivery lifecycle plus the NN job queue. Conc
   lifecycle timestamps. Assignment order is `priority DESC, queued_at ASC` (composite indexes defined on the model).
   `JobRequest` (the submit body) takes an optional `priority` (v0.86.0; negative = behind every normal job).
   `Run` cascades delete from `Job`.
+  - **A run may be of another output than its job** (v0.87.0, #1628). `Run.output` (nullable; from the
+    run config's `output` posted with `update_progress`) names what the run trained: a dev kit set recipe
+    posts force, COP and field as runs 1 to 3 of one force job. A run whose output is not the job's
+    `model_type` (`Run.is_extra_output`) has its results recorded and nothing else: it is never the job's
+    best run, never moves the device's best pointer or writes the unit's calibration record,
+    `recompute_best_metrics` skips it and `pin_best` refuses it. NULL (every plate job, every older worker)
+    is the job's own model. Its `test_metrics` are that output's own figures (COP: location error in mm),
+    not `mae` per axis. Needs axio-server's `runs.output` migration.
   - **A job's runs may train at the same time** (v0.86.2, Neuralizer #1621). `Job.complete_run` completes the
     run the request names (the newest open row of that number; all rows complete = no-op, so the router answers
     "already finalized"; no row of that number = the current run, as before). `Job.update_epoch` keeps

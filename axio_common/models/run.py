@@ -40,6 +40,7 @@ class RunResponse(BaseModel):
     epochs_completed: int
     is_best: bool
     is_current: bool
+    output: Optional[str] = None
     train_metrics: Optional[dict]
     val_metrics: Optional[dict]
     test_metrics: Optional[dict]
@@ -74,6 +75,10 @@ class Run(Base):
     train_metrics = Column(JSON, nullable=True)
     val_metrics = Column(JSON, nullable=True)
     test_metrics = Column(JSON, nullable=True)
+    # What this run trained when a job trains more than its own model: a dev kit
+    # set recipe posts force, COP and field as runs 1 to 3 (#1628). From the run
+    # config's `output`; NULL = the job's own model (every plate job).
+    output = Column(String, nullable=True)
 
     # Relationships
     job = relationship("Job", back_populates="runs", lazy="select")
@@ -85,6 +90,14 @@ class Run(Base):
         self.layers = json.dumps(run_config['layers'])
         self.batch_size = run_config['batch_size']
         self.epochs = run_config['epochs']
+        self.output = run_config.get('output')
+
+    def is_extra_output(self, job) -> bool:
+        """True for a run of another output than its job's model type (the COP or
+        field run of a dev kit force job). Its results are recorded, but it never
+        competes with the job's own runs: not the job's best run, not the
+        device's best model."""
+        return bool(self.output) and job is not None and self.output != job.model_type
 
     def complete(self, job, update: CompleteRunRequest, db: Session):
         """
@@ -101,6 +114,12 @@ class Run(Base):
         self.train_metrics = update.train_metrics
         self.val_metrics = update.val_metrics
         self.test_metrics = update.test_metrics
+
+        if self.is_extra_output(job):
+            logger.info(f"Run {self.number} of job {self.job_id} is its {self.output} run: "
+                        f"recorded, not compared with the job's {job.model_type} runs")
+            db.add(self)
+            return
 
         # Get best test metrics from the best run of the current job
         best_run = db.query(Run).filter(Run.job_id == self.job_id, Run.is_best).first()
@@ -157,6 +176,7 @@ class Run(Base):
             "epochs_completed": self.epochs_completed,
             "is_best": self.is_best,
             "is_current": self.is_current,
+            "output": self.output,
             "train_metrics": self.train_metrics,
             "val_metrics": self.val_metrics,
             "test_metrics": self.test_metrics
